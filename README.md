@@ -37,7 +37,7 @@ This extension is not on the Chrome Web Store. Install it directly from the sour
 Clone the repository or download the ZIP:
 
 ```bash
-git clone https://github.com/your-username/gMeetTranscriptCaptureChromePlugin.git
+git clone https://github.com/vincelamm/gMeetTranscriptCapture.git
 ```
 
 Or click **Code → Download ZIP** on GitHub and unzip it.
@@ -58,15 +58,33 @@ Click **Load unpacked** and select the folder you cloned or unzipped.
 
 The extension icon will appear in your Chrome toolbar. Pin it for easy access by clicking the puzzle piece icon and pinning **Meet Transcript Capture**.
 
+## Privacy & consent — please read before use
+
+> **You are responsible for informing all meeting participants that the conversation is being transcribed.**
+
+Recording or transcribing a conversation without the knowledge of the other participants may be **illegal** in your jurisdiction. Many countries and US states require the consent of all parties to a conversation before it may be recorded (e.g. California's two-party consent law, the EU's GDPR, Germany's §201 StGB). Even where it is not legally required, transcribing without disclosure is generally considered poor practice and a breach of trust.
+
+**Before you start capturing, you must:**
+
+1. Announce at the start of the meeting — verbally or in the chat — that you are creating a transcript, for example:
+   > *"Just a heads-up: I'm using a transcript tool to capture the notes from this call. Let me know if anyone objects."*
+2. Give participants a reasonable opportunity to object or leave before you click **Start Capture**.
+3. Handle the resulting transcript with care — treat it as you would any other record of a private conversation.
+
+This tool reads Google Meet's own live captions and does not access your microphone or audio stream directly. That does not change your obligations toward other participants.
+
+---
+
 ## Usage
 
 1. Join a Google Meet call
-2. Enable captions using the **CC button** at the bottom of the Meet window
-3. Click the **Meet Transcript Capture** icon in your toolbar
-4. Click **Start Capture**
-5. Talk — the extension captures every line with the speaker's name
-6. When done, click **Stop Capture**
-7. Click **Download .txt** or **Download .md** to save the transcript
+2. **Inform all participants** that you will be capturing a transcript (see above)
+3. Enable captions using the **CC button** at the bottom of the Meet window
+4. Click the **Meet Transcript Capture** icon in your toolbar
+5. Click **Start Capture**
+6. Talk — the extension captures every line with the speaker's name
+7. When done, click **Stop Capture**
+8. Click **Download .txt** or **Download .md** to save the transcript
 
 > The transcript is kept in memory for the browser session. If you close the browser before downloading, the transcript is lost.
 
