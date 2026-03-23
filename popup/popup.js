@@ -19,9 +19,11 @@ const views = {
 const btnStart        = document.getElementById('btn-start');
 const btnStop         = document.getElementById('btn-stop');
 const btnCancelWait   = document.getElementById('btn-cancel-wait');
-const btnDownloadTxt  = document.getElementById('btn-download-txt');
-const btnDownloadMd   = document.getElementById('btn-download-md');
-const btnClear        = document.getElementById('btn-clear');
+const btnDownloadTxt      = document.getElementById('btn-download-txt');
+const btnDownloadMd       = document.getElementById('btn-download-md');
+const btnDownloadLiveTxt  = document.getElementById('btn-download-live-txt');
+const btnDownloadLiveMd   = document.getElementById('btn-download-live-md');
+const btnClear            = document.getElementById('btn-clear');
 
 const capturingCount  = document.getElementById('capturing-line-count');
 const idleCount       = document.getElementById('idle-line-count');
@@ -173,8 +175,10 @@ btnCancelWait.addEventListener('click', async () => {
   renderIdle(state);
 });
 
-btnDownloadTxt.addEventListener('click', () => sendMessage({ type: 'DOWNLOAD_TRANSCRIPT', format: 'txt' }));
-btnDownloadMd.addEventListener('click', ()  => sendMessage({ type: 'DOWNLOAD_TRANSCRIPT', format: 'md' }));
+btnDownloadTxt.addEventListener('click',     () => sendMessage({ type: 'DOWNLOAD_TRANSCRIPT', format: 'txt' }));
+btnDownloadMd.addEventListener('click',      () => sendMessage({ type: 'DOWNLOAD_TRANSCRIPT', format: 'md' }));
+btnDownloadLiveTxt.addEventListener('click', () => sendMessage({ type: 'DOWNLOAD_TRANSCRIPT', format: 'txt' }));
+btnDownloadLiveMd.addEventListener('click',  () => sendMessage({ type: 'DOWNLOAD_TRANSCRIPT', format: 'md' }));
 
 btnClear.addEventListener('click', async () => {
   await sendMessage({ type: 'CLEAR_TRANSCRIPT' });

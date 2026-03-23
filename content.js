@@ -241,6 +241,10 @@ const lastCommitted = new Map();
 const utteranceStarts = new Map();
 // Timestamp of each speaker's last commit (to expire stale utterance context)
 const utteranceTimes = new Map();
+// Char offset into the full DOM text where the current line started.
+// Meet accumulates all speech in one growing element; this lets us strip
+// already-committed text when a new line boundary is detected.
+const lineStartLen = new Map();
 
 const DEBOUNCE_MS = 800;
 // How many leading characters must match to consider it the same utterance
@@ -299,15 +303,26 @@ function commitLine(speaker) {
   const isSameUtterance = leadingMatch && !expired;
 
   if (!isSameUtterance) {
-    // New utterance — record the start for future overlap checks
+    // New utterance — record start and advance line offset past already-committed text
     utteranceStarts.set(speaker, text.slice(0, UTTERANCE_OVERLAP_CHARS));
+    const prevFull = lastCommitted.get(speaker) || '';
+    lineStartLen.set(speaker, prevFull.length);
   }
 
   lastCommitted.set(speaker, text);
   utteranceTimes.set(speaker, now);
-  LOG(`COMMIT [${speaker}] (${isSameUtterance ? 'replace' : 'new'}): ${text.slice(0, 80)}`);
 
-  sendCaption(speaker === '(speaker)' ? '' : speaker, text, now, isSameUtterance);
+  // Strip text already committed in previous lines (handles Meet accumulating
+  // the entire session in one growing DOM element)
+  const startLen = lineStartLen.get(speaker) || 0;
+  const textToSend = (startLen > 0 && text.length > startLen)
+    ? text.slice(startLen).trim()
+    : text.trim();
+
+  if (!textToSend) return;
+
+  LOG(`COMMIT [${speaker}] (${isSameUtterance ? 'replace' : 'new'}): ${textToSend.slice(0, 80)}`);
+  sendCaption(speaker === '(speaker)' ? '' : speaker, textToSend, now, isSameUtterance);
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +381,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     lastCommitted.clear();
     utteranceStarts.clear();
     utteranceTimes.clear();
+    lineStartLen.clear();
     activeStrategy = null;
     openPort();
 
