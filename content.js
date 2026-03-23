@@ -203,7 +203,13 @@ let bgPort = null;
 function openPort() {
   if (bgPort) return;
   bgPort = chrome.runtime.connect({ name: 'content-script' });
-  bgPort.onDisconnect.addListener(() => { bgPort = null; });
+  bgPort.onDisconnect.addListener(() => {
+    bgPort = null;
+    if (isCapturing) {
+      // SW was terminated — reconnect to wake it and resume delivery
+      setTimeout(openPort, 200);
+    }
+  });
   LOG('Port to background opened');
 }
 
