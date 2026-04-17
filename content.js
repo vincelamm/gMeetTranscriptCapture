@@ -528,6 +528,31 @@ function stopScan() {
 }
 
 // ---------------------------------------------------------------------------
+// beforeunload guard — warn user about unsaved transcript
+// ---------------------------------------------------------------------------
+let hasUnsavedTranscript = false;
+
+function onBeforeUnload(e) {
+  if (hasUnsavedTranscript) {
+    e.preventDefault();
+    // Modern browsers ignore custom text but require returnValue to be set
+    e.returnValue = '';
+  }
+}
+
+function enableUnloadGuard() {
+  hasUnsavedTranscript = true;
+  window.addEventListener('beforeunload', onBeforeUnload);
+  LOG('Unload guard enabled — user will be warned before leaving');
+}
+
+function disableUnloadGuard() {
+  hasUnsavedTranscript = false;
+  window.removeEventListener('beforeunload', onBeforeUnload);
+  LOG('Unload guard disabled');
+}
+
+// ---------------------------------------------------------------------------
 // Message handling
 // ---------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -540,6 +565,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     lineStartLen.clear();
     activeStrategy = null;
     openPort();
+    enableUnloadGuard();
 
     LOG('Start capture requested');
     const match = detectStrategy();
@@ -562,7 +588,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     stopObserver();
     stopScan();
     closePort();
+    // Keep unload guard active — transcript still needs to be downloaded
     LOG('Capture stopped');
+    sendResponse({ status: 'ok' });
+  }
+
+  if (msg.type === 'TRANSCRIPT_DOWNLOADED' || msg.type === 'TRANSCRIPT_CLEARED') {
+    disableUnloadGuard();
     sendResponse({ status: 'ok' });
   }
 

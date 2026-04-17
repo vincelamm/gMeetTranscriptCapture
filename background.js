@@ -173,6 +173,13 @@ async function handleMessage(msg, sender) {
       const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`;
       await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
 
+      // Notify content script that transcript was downloaded (disables unload guard)
+      if (state.tabId) {
+        try {
+          await chrome.tabs.sendMessage(state.tabId, { type: 'TRANSCRIPT_DOWNLOADED' });
+        } catch { /* tab may have been closed */ }
+      }
+
       return { status: 'ok', filename };
     }
 
@@ -187,7 +194,16 @@ async function handleMessage(msg, sender) {
     }
 
     case 'CLEAR_TRANSCRIPT': {
+      const state = await getState();
       await setState({ lines: [], startTime: null, meetingTitle: '', isCapturing: false });
+
+      // Notify content script that transcript was cleared (disables unload guard)
+      if (state.tabId) {
+        try {
+          await chrome.tabs.sendMessage(state.tabId, { type: 'TRANSCRIPT_CLEARED' });
+        } catch { /* tab may have been closed */ }
+      }
+
       return { status: 'ok' };
     }
 
