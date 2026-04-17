@@ -145,9 +145,9 @@ function findAriaLiveContainer() {
       if (text.length === 0) return false;
       // Must have child elements — flat text nodes are status announcements
       if (el.children.length === 0) return false;
-      // Exclude known Meet status messages
-      if (/\b(camera|microphone|mic)\s+(is|are)\s+(on|off)\b/i.test(text)) return false;
-      if (/\b(Kamera|Mikrofon)\s+(ist|sind)\s+(an|aus|ein|aktiviert|deaktiviert)\b/i.test(text)) return false;
+      // Exclude short status announcements (camera/mic on/off etc.)
+      // Caption containers typically grow beyond a short sentence quickly
+      if (text.length < 80 && el.children.length < 2) return false;
       return true;
     });
   if (!candidates.length) return null;
@@ -413,6 +413,12 @@ function findCCButton() {
     'sous-titre',           // FR
     'sottotitoli',          // IT
     'subtítulos',           // ES
+    'legendas',             // PT
+    'ondertiteling',        // NL
+    'napisy',               // PL
+    'субтитр',              // RU
+    '字幕',                  // JA / ZH
+    '자막',                  // KO
   ];
 
   const keywordPattern = new RegExp(CC_KEYWORDS.join('|'), 'i');
@@ -420,36 +426,46 @@ function findCCButton() {
   // Selectors covering native buttons AND Meet's custom role="button" elements
   const clickableSelector = 'button, [role="button"]';
 
-  // Pass 1: check aria-label and data-tooltip (most reliable)
+  // Pass 1: check aria-label and data-tooltip for known keywords
   for (const el of document.querySelectorAll(clickableSelector)) {
     const ariaLabel = el.getAttribute('aria-label') || '';
     const tooltip = el.getAttribute('data-tooltip') || '';
     if (keywordPattern.test(ariaLabel) || keywordPattern.test(tooltip)) {
-      LOG('findCCButton: matched via aria-label/tooltip:', ariaLabel || tooltip);
+      LOG('findCCButton: matched via keyword in aria-label/tooltip:', ariaLabel || tooltip);
       return el;
     }
   }
 
-  // Pass 2: check jsname — Meet's CC button has been seen with these values
+  // Pass 2: language-independent — Meet includes the keyboard shortcut "(c)"
+  // in the CC button label across virtually all locales
+  for (const el of document.querySelectorAll(clickableSelector)) {
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    const tooltip = el.getAttribute('data-tooltip') || '';
+    const combined = ariaLabel + ' ' + tooltip;
+    if (/\(c\)/.test(combined)) {
+      LOG('findCCButton: matched via shortcut hint "(c)":', combined.trim());
+      return el;
+    }
+  }
+
+  // Pass 3: check jsname — Meet's CC button has been seen with these values
   const CC_JSNAMES = ['r8qRAd', 'Dg9Wp'];
   for (const jsname of CC_JSNAMES) {
     const el = document.querySelector(`[jsname="${jsname}"]`);
     if (el) {
       LOG('findCCButton: matched via jsname:', jsname);
-      // Return the clickable ancestor if the jsname element isn't clickable itself
       return el.closest(clickableSelector) || el;
     }
   }
 
-  // Pass 3: look inside the bottom toolbar for a button whose label mentions CC
-  // Meet's toolbar is typically the last bar of buttons at the bottom
+  // Pass 4: toolbar scan with keywords
   const toolbars = document.querySelectorAll('[role="toolbar"], [jsname="EaZ7Cc"]');
   for (const toolbar of toolbars) {
     for (const el of toolbar.querySelectorAll(clickableSelector)) {
       const text = (el.getAttribute('aria-label') || '') + ' ' +
                    (el.getAttribute('data-tooltip') || '') + ' ' +
                    el.textContent;
-      if (keywordPattern.test(text)) {
+      if (keywordPattern.test(text) || /\(c\)/.test(text)) {
         LOG('findCCButton: matched via toolbar scan:', text.trim().slice(0, 60));
         return el;
       }

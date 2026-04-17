@@ -6,11 +6,13 @@ A Chrome extension that captures Google Meet live captions and saves them as a t
 
 ## Features
 
-- Captures live captions (CC) from Google Meet in real time
+- **Automatically enables captions** (CC) when you start capture — no need to remember to turn them on manually
+- Captures live captions from Google Meet in real time
 - Records speaker names alongside each line
 - Handles Google Meet's rolling/revised captions — no duplicate lines
 - Download the transcript as **plain text** (`.txt`) or **Markdown** (`.md`)
 - Transcript is stored for the browser session, so you can download after the meeting ends
+- Works across Meet language settings (EN, DE, FR, IT, ES, PT, NL, PL, RU, JA, ZH, KO)
 
 **Example output:**
 
@@ -79,12 +81,13 @@ This tool reads Google Meet's own live captions and does not access your microph
 
 1. Join a Google Meet call
 2. **Inform all participants** that you will be capturing a transcript (see above)
-3. Enable captions using the **CC button** at the bottom of the Meet window
-4. Click the **Meet Transcript Capture** icon in your toolbar
-5. Click **Start Capture**
-6. Talk — the extension captures every line with the speaker's name
-7. When done, click **Stop Capture**
-8. Click **Download .txt** or **Download .md** to save the transcript
+3. Click the **Meet Transcript Capture** icon in your toolbar
+4. Click **Start Capture** — captions will be enabled automatically if they aren't already
+5. Talk — the extension captures every line with the speaker's name
+6. When done, click **Stop Capture**
+7. Click **Download .txt** or **Download .md** to save the transcript
+
+> If auto-enable doesn't work (e.g. after a Meet UI update), the extension will show instructions to enable captions manually via the CC button or by pressing `c`.
 
 > The transcript is kept in memory for the browser session. If you close the browser before downloading, the transcript is lost.
 
@@ -94,7 +97,7 @@ After pulling new changes from the repository, go to `chrome://extensions` and c
 
 ## Notes on accuracy
 
-- Captions must be enabled in Meet — the extension reads the CC widget, not the audio
+- The extension reads Meet's CC widget, not the audio — captions are auto-enabled on capture start, but if that fails you'll need to enable them manually
 - Google Meet's speech recognition may revise words after they're spoken; the extension handles this by updating lines in place rather than creating duplicates
 - Speaker names come directly from Meet's caption display and match what Meet shows on screen
 - The extension uses `jsname` attributes in Meet's DOM to find the captions widget. If Google updates their frontend and captions stop being captured, see [`CLAUDE.md`](CLAUDE.md) for how to update the selectors
