@@ -240,6 +240,8 @@ function closePort() {
 function sendCaption(speaker, text, timestamp, replaceLastLine = false) {
   if (bgPort) {
     bgPort.postMessage({ type: 'CAPTION_LINE', speaker, text, timestamp, replaceLastLine });
+    // Enable unload guard on first actual caption data
+    if (!hasUnsavedTranscript) enableUnloadGuard();
   }
 }
 
@@ -492,12 +494,10 @@ function logCCDiagnostics() {
 // Polling (waits for CC widget to appear in DOM)
 // ---------------------------------------------------------------------------
 let ccAttempts = 0;
-let ccAutoEnableTried = false;
 
 function startScan() {
   stopScan();
   ccAttempts = 0;
-  ccAutoEnableTried = false;
   LOG('Polling for caption container every 2s…');
   scanInterval = setInterval(() => {
     const match = detectStrategy();
@@ -508,14 +508,7 @@ function startScan() {
       chrome.runtime.sendMessage({ type: 'CC_STATUS', status: 'found' }).catch(() => {});
     } else {
       ccAttempts++;
-      // Retry auto-enable after 2 polls (~4s) — the toolbar may not have
-      // been in the DOM when we first tried (e.g. user just joined)
-      if (ccAttempts === 2 && !ccAutoEnableTried) {
-        ccAutoEnableTried = true;
-        const result = tryEnableCC();
-        LOG('Retry auto-enable CC result:', result);
-      }
-      // After 3 polls (~6s), warn the user
+      // After 3 polls (~6s) without finding captions, warn the user
       if (ccAttempts === 3) {
         chrome.runtime.sendMessage({ type: 'CC_STATUS', status: 'not_found' }).catch(() => {});
       }
@@ -565,7 +558,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     lineStartLen.clear();
     activeStrategy = null;
     openPort();
-    enableUnloadGuard();
 
     LOG('Start capture requested');
     const match = detectStrategy();
