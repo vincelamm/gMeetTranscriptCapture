@@ -52,8 +52,6 @@ Go to `chrome://extensions` in your browser.
 
 Toggle **Developer mode** on in the top-right corner.
 
-![Developer mode toggle](https://developer.chrome.com/static/docs/extensions/get-started/tutorial/hello-world/image/extensions-page-e0d64d89375b.png)
-
 ### 4. Load the extension
 
 Click **Load unpacked** and select the folder you cloned or unzipped.
