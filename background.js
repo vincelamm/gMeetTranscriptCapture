@@ -191,6 +191,19 @@ async function handleMessage(msg, sender) {
       return { status: 'ok' };
     }
 
+    case 'CC_STATUS': {
+      // Forward CC detection status from content script to popup
+      broadcastToPopup({ type: 'CC_STATUS', status: msg.status });
+      if (msg.status === 'found') {
+        // CC found — transition to capturing state
+        const state = await getState();
+        if (state.isCapturing) {
+          broadcastToPopup({ type: 'CC_FOUND', lineCount: state.lines.length });
+        }
+      }
+      return { status: 'ok' };
+    }
+
     default:
       return { error: `Unknown message type: ${msg.type}` };
   }

@@ -29,6 +29,8 @@ const capturingCount  = document.getElementById('capturing-line-count');
 const idleCount       = document.getElementById('idle-line-count');
 const elapsedEl       = document.getElementById('elapsed');
 const prevTranscript  = document.getElementById('prev-transcript');
+const waitingMessage  = document.getElementById('waiting-message');
+const ccWarning       = document.getElementById('cc-warning');
 
 // ---------------------------------------------------------------------------
 // State
@@ -112,6 +114,15 @@ function connectPort() {
       // Refresh state from background
       initialize();
     }
+    if (msg.type === 'CC_STATUS' && msg.status === 'not_found') {
+      // Captions still not detected after several attempts — show manual instructions
+      if (waitingMessage) waitingMessage.textContent = 'Captions not detected yet.';
+      if (ccWarning) ccWarning.classList.remove('hidden');
+    }
+    if (msg.type === 'CC_FOUND') {
+      // Captions detected — switch to capturing view
+      initialize();
+    }
   });
   port.onDisconnect.addListener(() => { port = null; });
 }
@@ -154,6 +165,17 @@ btnStart.addEventListener('click', async () => {
   const response = await sendMessage({ type: 'START_CAPTURE' });
   if (response?.status === 'waiting_for_captions') {
     showView('waiting');
+    // Reset waiting state
+    if (ccWarning) ccWarning.classList.add('hidden');
+    if (waitingMessage) {
+      if (response.ccAction === 'clicked' || response.ccAction === 'shortcut') {
+        waitingMessage.textContent = 'Trying to enable captions automatically…';
+      } else if (response.ccAction === 'already_on') {
+        waitingMessage.textContent = 'Captions seem to be enabled. Waiting for text…';
+      } else {
+        waitingMessage.textContent = 'Waiting for captions to appear…';
+      }
+    }
   } else if (response?.status === 'ok') {
     const state = await sendMessage({ type: 'GET_STATE' });
     renderCapturing(state);

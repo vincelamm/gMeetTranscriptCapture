@@ -352,10 +352,75 @@ function stopObserver() {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-enable CC (Closed Captions)
+// ---------------------------------------------------------------------------
+
+/**
+ * Attempts to find and click the CC button in Google Meet.
+ * Returns true if the button was found and clicked.
+ */
+function tryEnableCC() {
+  // Strategy 1: aria-label based (works across languages)
+  const ccButton = findCCButton();
+  if (ccButton) {
+    // Check if CC is already ON — Meet toggles aria-pressed or adds an "on" visual state
+    const isAlreadyOn = ccButton.getAttribute('aria-pressed') === 'true';
+    if (isAlreadyOn) {
+      LOG('CC button found — captions already enabled');
+      return 'already_on';
+    }
+    ccButton.click();
+    LOG('CC button found and clicked — captions enabled');
+    return 'clicked';
+  }
+
+  // Strategy 2: simulate the keyboard shortcut 'c' which toggles CC in Meet
+  LOG('CC button not found in DOM, trying keyboard shortcut "c"');
+  document.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'c', code: 'KeyC', keyCode: 67, bubbles: true, cancelable: true,
+  }));
+  return 'shortcut';
+}
+
+function findCCButton() {
+  // Meet's CC button has aria-label containing "captions" or locale equivalents
+  const selectors = [
+    'button[aria-label*="caption" i]',
+    'button[aria-label*="Caption" i]',
+    'button[aria-label*="subtitle" i]',
+    'button[aria-label*="Subtitle" i]',
+    'button[aria-label*="Untertitel" i]',
+    'button[aria-label*="sous-titre" i]',
+    // data-tooltip fallback
+    'button[data-tooltip*="caption" i]',
+    'button[data-tooltip*="Untertitel" i]',
+  ];
+
+  for (const sel of selectors) {
+    const btn = document.querySelector(sel);
+    if (btn) return btn;
+  }
+
+  // Fallback: look for a button whose accessible name / inner text mentions CC
+  for (const btn of document.querySelectorAll('button')) {
+    const label = (btn.getAttribute('aria-label') || '') + ' ' + btn.textContent;
+    if (/\b(closed\s*caption|cc|untertitel)\b/i.test(label)) {
+      return btn;
+    }
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Polling (waits for CC widget to appear in DOM)
 // ---------------------------------------------------------------------------
+let ccAttempts = 0;
+const MAX_CC_ATTEMPTS = 3;
+
 function startScan() {
   stopScan();
+  ccAttempts = 0;
   LOG('Polling for caption container every 2s…');
   scanInterval = setInterval(() => {
     const match = detectStrategy();
@@ -363,6 +428,14 @@ function startScan() {
       stopScan();
       activeStrategy = match.strategy;
       startObserver(match.strategy, match.container);
+      // Notify popup that captions were found
+      chrome.runtime.sendMessage({ type: 'CC_STATUS', status: 'found' }).catch(() => {});
+    } else {
+      ccAttempts++;
+      // After a few polls without finding captions, notify popup
+      if (ccAttempts === 3) {
+        chrome.runtime.sendMessage({ type: 'CC_STATUS', status: 'not_found' }).catch(() => {});
+      }
     }
   }, 2000);
 }
@@ -393,8 +466,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       startObserver(match.strategy, match.container);
       sendResponse({ status: 'ok' });
     } else {
+      // Captions not found — try to auto-enable CC
+      const ccResult = tryEnableCC();
+      LOG('Auto-enable CC result:', ccResult);
       startScan();
-      sendResponse({ status: 'waiting_for_captions' });
+      sendResponse({ status: 'waiting_for_captions', ccAction: ccResult });
     }
   }
 

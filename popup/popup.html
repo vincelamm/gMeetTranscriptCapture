@@ -20,7 +20,7 @@
       <div class="icon">📋</div>
       <h2>Meet Transcript Capture</h2>
       <p class="hint">
-        Enable <strong>Captions</strong> in Meet (CC button) before starting.
+        Captions (CC) will be enabled automatically when you start capture.
       </p>
       <p class="consent-notice">
         By starting, you confirm that all participants have been informed that this call is being transcribed.
@@ -56,10 +56,17 @@
     <div id="view-waiting" class="view hidden">
       <div class="icon">⏳</div>
       <h2>Waiting for captions…</h2>
-      <p class="message">
-        Enable <strong>Captions</strong> in Meet using the CC button, then capture
-        will start automatically.
+      <p class="message" id="waiting-message">
+        Trying to enable captions automatically…
       </p>
+      <div id="cc-warning" class="cc-warning hidden">
+        <p>Captions could not be detected. Please enable them manually:</p>
+        <ol>
+          <li>Click the <strong>CC</strong> button in Meet's bottom toolbar</li>
+          <li>Or press <kbd>c</kbd> on your keyboard</li>
+        </ol>
+        <p>Capture will start automatically once captions appear.</p>
+      </div>
       <button id="btn-cancel-wait" class="btn btn-ghost">Cancel</button>
     </div>
 
