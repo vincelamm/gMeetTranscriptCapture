@@ -360,7 +360,6 @@ function stopObserver() {
  * Returns true if the button was found and clicked.
  */
 function tryEnableCC() {
-  // Strategy 1: aria-label based (works across languages)
   const ccButton = findCCButton();
   if (ccButton) {
     // Check if CC is already ON — Meet toggles aria-pressed or adds an "on" visual state
@@ -374,53 +373,96 @@ function tryEnableCC() {
     return 'clicked';
   }
 
-  // Strategy 2: simulate the keyboard shortcut 'c' which toggles CC in Meet
-  LOG('CC button not found in DOM, trying keyboard shortcut "c"');
-  document.dispatchEvent(new KeyboardEvent('keydown', {
-    key: 'c', code: 'KeyC', keyCode: 67, bubbles: true, cancelable: true,
-  }));
-  return 'shortcut';
+  LOG('CC button not found in DOM — user must enable manually');
+  logCCDiagnostics();
+  return 'not_found';
 }
 
+/**
+ * Finds the CC/captions toggle button in Google Meet.
+ *
+ * Meet uses custom components (not always native <button>), so we search
+ * both <button> and [role="button"] elements. We also check aria-label,
+ * data-tooltip, and jsname attributes across multiple languages.
+ */
 function findCCButton() {
-  // Meet's CC button has aria-label containing "captions" or locale equivalents
-  const selectors = [
-    'button[aria-label*="caption" i]',
-    'button[aria-label*="Caption" i]',
-    'button[aria-label*="subtitle" i]',
-    'button[aria-label*="Subtitle" i]',
-    'button[aria-label*="Untertitel" i]',
-    'button[aria-label*="sous-titre" i]',
-    // data-tooltip fallback
-    'button[data-tooltip*="caption" i]',
-    'button[data-tooltip*="Untertitel" i]',
+  // Keywords that appear in CC button labels across locales
+  const CC_KEYWORDS = [
+    'caption', 'captions', 'closed caption',
+    'subtitle', 'subtitles',
+    'untertitel',           // DE
+    'sous-titre',           // FR
+    'sottotitoli',          // IT
+    'subtítulos',           // ES
   ];
 
-  for (const sel of selectors) {
-    const btn = document.querySelector(sel);
-    if (btn) return btn;
+  const keywordPattern = new RegExp(CC_KEYWORDS.join('|'), 'i');
+
+  // Selectors covering native buttons AND Meet's custom role="button" elements
+  const clickableSelector = 'button, [role="button"]';
+
+  // Pass 1: check aria-label and data-tooltip (most reliable)
+  for (const el of document.querySelectorAll(clickableSelector)) {
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    const tooltip = el.getAttribute('data-tooltip') || '';
+    if (keywordPattern.test(ariaLabel) || keywordPattern.test(tooltip)) {
+      LOG('findCCButton: matched via aria-label/tooltip:', ariaLabel || tooltip);
+      return el;
+    }
   }
 
-  // Fallback: look for a button whose accessible name / inner text mentions CC
-  for (const btn of document.querySelectorAll('button')) {
-    const label = (btn.getAttribute('aria-label') || '') + ' ' + btn.textContent;
-    if (/\b(closed\s*caption|cc|untertitel)\b/i.test(label)) {
-      return btn;
+  // Pass 2: check jsname — Meet's CC button has been seen with these values
+  const CC_JSNAMES = ['r8qRAd', 'Dg9Wp'];
+  for (const jsname of CC_JSNAMES) {
+    const el = document.querySelector(`[jsname="${jsname}"]`);
+    if (el) {
+      LOG('findCCButton: matched via jsname:', jsname);
+      // Return the clickable ancestor if the jsname element isn't clickable itself
+      return el.closest(clickableSelector) || el;
+    }
+  }
+
+  // Pass 3: look inside the bottom toolbar for a button whose label mentions CC
+  // Meet's toolbar is typically the last bar of buttons at the bottom
+  const toolbars = document.querySelectorAll('[role="toolbar"], [jsname="EaZ7Cc"]');
+  for (const toolbar of toolbars) {
+    for (const el of toolbar.querySelectorAll(clickableSelector)) {
+      const text = (el.getAttribute('aria-label') || '') + ' ' +
+                   (el.getAttribute('data-tooltip') || '') + ' ' +
+                   el.textContent;
+      if (keywordPattern.test(text)) {
+        LOG('findCCButton: matched via toolbar scan:', text.trim().slice(0, 60));
+        return el;
+      }
     }
   }
 
   return null;
 }
 
+function logCCDiagnostics() {
+  const clickables = document.querySelectorAll('button, [role="button"]');
+  const labels = [...clickables]
+    .map(el => ({
+      tag: el.tagName,
+      ariaLabel: el.getAttribute('aria-label'),
+      tooltip: el.getAttribute('data-tooltip'),
+      jsname: el.getAttribute('jsname'),
+    }))
+    .filter(x => x.ariaLabel || x.tooltip);
+  LOG('CC diagnostics — clickable elements with labels:', JSON.stringify(labels, null, 2));
+}
+
 // ---------------------------------------------------------------------------
 // Polling (waits for CC widget to appear in DOM)
 // ---------------------------------------------------------------------------
 let ccAttempts = 0;
-const MAX_CC_ATTEMPTS = 3;
+let ccAutoEnableTried = false;
 
 function startScan() {
   stopScan();
   ccAttempts = 0;
+  ccAutoEnableTried = false;
   LOG('Polling for caption container every 2s…');
   scanInterval = setInterval(() => {
     const match = detectStrategy();
@@ -428,11 +470,17 @@ function startScan() {
       stopScan();
       activeStrategy = match.strategy;
       startObserver(match.strategy, match.container);
-      // Notify popup that captions were found
       chrome.runtime.sendMessage({ type: 'CC_STATUS', status: 'found' }).catch(() => {});
     } else {
       ccAttempts++;
-      // After a few polls without finding captions, notify popup
+      // Retry auto-enable after 2 polls (~4s) — the toolbar may not have
+      // been in the DOM when we first tried (e.g. user just joined)
+      if (ccAttempts === 2 && !ccAutoEnableTried) {
+        ccAutoEnableTried = true;
+        const result = tryEnableCC();
+        LOG('Retry auto-enable CC result:', result);
+      }
+      // After 3 polls (~6s), warn the user
       if (ccAttempts === 3) {
         chrome.runtime.sendMessage({ type: 'CC_STATUS', status: 'not_found' }).catch(() => {});
       }

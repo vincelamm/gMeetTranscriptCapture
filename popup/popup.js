@@ -168,8 +168,8 @@ btnStart.addEventListener('click', async () => {
     // Reset waiting state
     if (ccWarning) ccWarning.classList.add('hidden');
     if (waitingMessage) {
-      if (response.ccAction === 'clicked' || response.ccAction === 'shortcut') {
-        waitingMessage.textContent = 'Trying to enable captions automatically…';
+      if (response.ccAction === 'clicked') {
+        waitingMessage.textContent = 'Captions enabled! Waiting for text to appear…';
       } else if (response.ccAction === 'already_on') {
         waitingMessage.textContent = 'Captions seem to be enabled. Waiting for text…';
       } else {
