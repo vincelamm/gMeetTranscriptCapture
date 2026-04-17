@@ -136,9 +136,20 @@ function isSentenceFragment(str) {
 // Caption container discovery helpers
 // ---------------------------------------------------------------------------
 function findAriaLiveContainer() {
-  // Pick the aria-live="polite" element with the most text (most likely to be CC)
+  // Pick the aria-live="polite" element most likely to be the CC widget.
+  // Caption containers always have child elements (speaker blocks),
+  // unlike status announcements ("Your camera is on") which are flat text.
   const candidates = [...document.querySelectorAll('[aria-live="polite"]')]
-    .filter(el => el.textContent.trim().length > 0);
+    .filter(el => {
+      const text = el.textContent.trim();
+      if (text.length === 0) return false;
+      // Must have child elements — flat text nodes are status announcements
+      if (el.children.length === 0) return false;
+      // Exclude known Meet status messages
+      if (/\b(camera|microphone|mic)\s+(is|are)\s+(on|off)\b/i.test(text)) return false;
+      if (/\b(Kamera|Mikrofon)\s+(ist|sind)\s+(an|aus|ein|aktiviert|deaktiviert)\b/i.test(text)) return false;
+      return true;
+    });
   if (!candidates.length) return null;
   return candidates.sort((a, b) => b.textContent.length - a.textContent.length)[0];
 }
@@ -154,13 +165,21 @@ function detectStrategy() {
     LOG(`Strategy "${strategy.name}" found container`);
     logContainerStructure(container);
 
-    // Verify extraction works (or at least the container is non-empty)
     const speakers = strategy.extractSpeakers(container);
     if (speakers.size > 0) {
       LOG(`Strategy "${strategy.name}" extracted ${speakers.size} speaker(s):`, [...speakers.keys()]);
+      return { strategy, container };
     }
-    // Return even if empty — we found a container; we'll observe it
-    return { strategy, container };
+
+    // For jsname strategies (A/B), the container itself is a strong signal —
+    // accept it even if empty (captions may appear momentarily).
+    // For fallback strategies, require actual speaker data to avoid false positives.
+    if (strategy.name.startsWith('jsname')) {
+      LOG(`Strategy "${strategy.name}" — container found but empty, accepting (jsname match)`);
+      return { strategy, container };
+    }
+
+    LOG(`Strategy "${strategy.name}" — container found but no speakers extracted, skipping`);
   }
 
   LOG('No strategy matched. Is CC (captions) enabled in Meet?');

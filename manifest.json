@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Meet Transcript Capture",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Captures Google Meet live captions as a timestamped transcript with speaker names.",
   "icons": {
     "16": "icons/icon16.png",
