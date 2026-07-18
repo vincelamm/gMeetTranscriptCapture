@@ -155,27 +155,24 @@ export function formatMd(lines, meetingTitle, startTime, meetingInfo = null) {
 export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = null) {
   const endTime = lines.length > 0 ? lines[lines.length - 1].timestamp : startTime;
   const duration = formatDuration(endTime - startTime);
+  const localUser = meetingInfo?.localUser;
+  const ph = '[PLATZHALTER]';
 
-  const metaLines = [
-    `Meeting: ${meetingTitle || 'Google Meet'}`,
-    `Datum: ${formatDate(startTime)}`,
-    `Dauer: ${duration}`,
+  // Pre-fill Rahmendaten from scraped metadata; fall back to placeholder
+  const rahmendaten = [
+    `- Gremium/Runde: ${meetingTitle || ph}`,
+    `- Datum: ${meetingInfo?.scheduledTime || formatDate(startTime)}`,
+    `- Format: Online (Google Meet)`,
+    `- Teilnehmende: ${meetingInfo?.participants?.length > 0 ? meetingInfo.participants.join(', ') : ph}`,
+    `- Protokollführung: ${localUser || ph}`,
   ];
-  if (meetingInfo?.scheduledTime) metaLines.push(`Terminzeit: ${meetingInfo.scheduledTime}`);
-  if (meetingInfo?.organizer) metaLines.push(`Organisator: ${meetingInfo.organizer}`);
-  if (meetingInfo?.localUser) metaLines.push(`Verfasser/in: ${meetingInfo.localUser}`);
-  if (meetingInfo?.participants?.length > 0) {
-    metaLines.push(`Teilnehmer: ${meetingInfo.participants.join(', ')}`);
-  }
-  if (meetingInfo?.description) {
-    metaLines.push(`Beschreibung: ${meetingInfo.description.trim()}`);
-  }
+  if (meetingInfo?.organizer) rahmendaten.push(`- Organisator/in: ${meetingInfo.organizer}`);
+  if (meetingInfo?.description) rahmendaten.push(`- Agenda/Beschreibung: ${meetingInfo.description.trim()}`);
 
-  const localUserNote = meetingInfo?.localUser
-    ? `Hinweis: Im Transkript ist „${meetingInfo.localUser}" die Person, die dieses Protokoll verfasst.`
+  const localUserNote = localUser
+    ? `Hinweis: Im Transkript steht „${localUser}" für die protokollführende Person.`
     : '';
 
-  const localUser = meetingInfo?.localUser;
   const transcriptBody = lines
     .map(({ speaker, text, timestamp }) => {
       const relTime = formatDuration(timestamp - startTime);
@@ -184,20 +181,31 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
     .join('\n');
 
   return [
-    'Du bist ein professioneller Meeting-Assistent. Erstelle ein strukturiertes Protokoll auf Basis des folgenden Transkripts.',
-    ...(localUserNote ? [localUserNote] : []),
+    'Du bist ein erfahrener Protokollant. Erstelle aus dem folgenden Meeting-Transkript ein professionelles Ergebnisprotokoll.',
+    ...(localUserNote ? ['', localUserNote] : []),
     '',
-    'Das Protokoll soll folgende Abschnitte enthalten:',
-    '1. **Zusammenfassung** – Was wurde besprochen? (2–4 Sätze)',
-    '2. **Beschlüsse** – Welche Entscheidungen wurden getroffen?',
-    '3. **Aufgaben & nächste Schritte** – Wer macht was? Mit Verantwortlichkeit und ggf. Frist.',
-    '4. **Offene Punkte** – Ungelöste Fragen oder Themen für das nächste Meeting.',
+    '## Rahmendaten',
+    '(aus Transkript-Metadaten entnommen – fehlende Angaben bitte als [PLATZHALTER] belassen)',
     '',
-    'Verwende einen sachlichen, professionellen Ton. Falls keine klaren Beschlüsse oder Aufgaben erkennbar sind, notiere das explizit.',
+    ...rahmendaten,
+    '',
+    '## Anforderungen an das Protokoll',
+    '',
+    '1. **Struktur:** Kopf mit Rahmendaten, danach Gliederung nach Tagesordnungspunkten bzw. thematischen Blöcken.',
+    '2. **Stil:** Sachlich, neutral, im Präsens oder Konjunktiv der indirekten Rede. Keine wörtlichen Zitate, außer bei formalen Anträgen oder Beschlüssen.',
+    '3. **Inhalt pro Themenblock:** Kurze Zusammenfassung der Diskussion, unterschiedliche Positionen (ohne Wertung), gefasste Beschlüsse mit Abstimmungsergebnis (falls vorhanden), offene Punkte.',
+    '4. **Am Ende:** Übersicht aller Aufgaben/To-dos mit Verantwortlichen und Fristen sowie ggf. der nächste Termin.',
+    '',
+    '## Wichtige Filterregeln',
+    '',
+    '- Nimm ausschließlich fachlich und organisatorisch relevante Inhalte auf.',
+    '- Lasse private Themen, Smalltalk, persönliche Anekdoten, gesundheitliche oder familiäre Erwähnungen sowie Äußerungen ohne Bezug zur Sitzung vollständig weg.',
+    '- Lasse emotionale Zuspitzungen oder persönliche Angriffe weg; gib nur den sachlichen Kern einer kontroversen Diskussion wieder.',
+    '- Wenn unklar ist, ob eine Passage relevant ist, liste sie am Ende unter „Zur Prüfung durch Protokollführung" auf, statt sie ins Protokoll aufzunehmen.',
     '',
     '---',
     '',
-    ...metaLines,
+    `Aufzeichnungsbeginn: ${formatDate(startTime)} · Dauer: ${duration}`,
     '',
     'TRANSKRIPT:',
     '',
