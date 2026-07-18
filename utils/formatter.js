@@ -152,10 +152,8 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
   const localUser = meetingInfo?.localUser;
   const ph = '[PLATZHALTER]';
 
-  // Teilnehmende: prefer scraped list, fall back to speakers in transcript
-  const participants = meetingInfo?.participants?.length > 0
-    ? meetingInfo.participants
-    : speakersFromLines(lines, localUser);
+  // Teilnehmende: always derived from who actually spoke in the transcript
+  const participants = speakersFromLines(lines, localUser);
 
   const rahmendaten = [
     `- Gremium/Runde: ${meetingTitle || ph}`,
