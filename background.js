@@ -160,7 +160,8 @@ async function handleMessage(msg, sender) {
     }
 
     case 'MEETING_INFO': {
-      await setState({ meetingInfo: msg.info });
+      const cur = await getState();
+      await setState({ meetingInfo: { ...(cur.meetingInfo || {}), ...msg.info } });
       return { status: 'ok' };
     }
 

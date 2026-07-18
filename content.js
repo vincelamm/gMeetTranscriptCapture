@@ -544,6 +544,7 @@ let isCapturing = false;
 let observer = null;
 let scanInterval = null;
 let activeStrategy = null;
+let localUserSent = false; // prevent redundant MEETING_INFO updates
 
 /// Map<speakerKey, { pendingText: string, timer: TimeoutID }>
 const speakerBuffers = new Map();
@@ -558,6 +559,24 @@ const utteranceTimes = new Map();
 // Meet accumulates all speech in one growing element; this lets us strip
 // already-committed text when a new line boundary is detected.
 const lineStartLen = new Map();
+
+/**
+ * Lazy localUser detection: called the first time "You" appears as a caption
+ * speaker. At that moment the local user's video tile is guaranteed to be in
+ * the DOM, so detectLocalUser() is much more likely to succeed than at capture
+ * start. Sends a MEETING_INFO patch (background merges it).
+ */
+function tryDetectAndSendLocalUser() {
+  if (localUserSent) return;
+  const info = {};
+  detectLocalUser(info);
+  if (info.localUser) {
+    localUserSent = true;
+    chrome.runtime.sendMessage({ type: 'MEETING_INFO', info: { localUser: info.localUser } })
+      .catch(() => {});
+    LOG('localUser detected lazily:', info.localUser);
+  }
+}
 
 const DEBOUNCE_MS = 800;
 // How many leading characters must match to consider it the same utterance
@@ -644,6 +663,12 @@ function commitLine(speaker) {
   const textToSend = seemsAccumulated ? text.slice(startLen).trim() : text.trim();
 
   if (!textToSend) return;
+
+  // When "You" appears as a speaker the local user's video tile is in the DOM —
+  // take the opportunity to detect their real name if not yet known.
+  if (/^(you|vous|du|tú|tu|ty|вы|あなた)$/i.test(speaker.trim())) {
+    tryDetectAndSendLocalUser();
+  }
 
   LOG(`COMMIT [${speaker}] (${isSameUtterance ? 'replace' : 'new'}): ${textToSend.slice(0, 80)}`);
   sendCaption(speaker === '(speaker)' ? '' : speaker, textToSend, now, isSameUtterance);
@@ -854,6 +879,7 @@ function disableUnloadGuard() {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'START_CAPTURE') {
     isCapturing = true;
+    localUserSent = false;
     speakerBuffers.clear();
     lastCommitted.clear();
     utteranceStarts.clear();
