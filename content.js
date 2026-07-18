@@ -302,24 +302,18 @@ function findMeetingInfoButton() {
  * (or a localized variant), then walk up to its panel container.
  */
 function findMeetingDetailsPanel() {
-  // Try aria-label first — Meet sometimes marks the panel container directly
-  const byLabel = document.querySelector(
-    '[aria-label*="Meeting details" i], [aria-label*="Meetingdetails" i], ' +
-    '[aria-label*="Besprechungsdetails" i], [aria-label*="détails" i]'
-  );
-  if (byLabel) return byLabel;
-
-  // Walk all heading-like elements and look for the panel title text
+  // The ℹ button that opens the panel ALSO has aria-label="Meeting details",
+  // so we cannot use aria-label to find the panel — we'd get the button.
+  // Instead find the heading element *inside* the panel, then walk up to the
+  // container (jsname="I2egDd" in Jul 2026 DOM).
   const PANEL_LABELS = /^(meeting details|meetingdetails|besprechungsdetails|détails de la réunion|detalles de la reunión)$/i;
-  for (const el of document.querySelectorAll('[role="heading"], h1, h2, h3, h4')) {
+  for (const el of document.querySelectorAll('[role="heading"]')) {
     if (PANEL_LABELS.test(el.textContent.trim())) {
-      // Walk up to find a reasonable panel container
-      return el.closest('[role="complementary"], [role="dialog"], aside')
+      return el.closest('[jsname="I2egDd"], [role="complementary"], [role="dialog"], aside')
         || el.parentElement?.parentElement?.parentElement
         || el.parentElement?.parentElement;
     }
   }
-
   return null;
 }
 

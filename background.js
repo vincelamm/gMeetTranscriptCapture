@@ -253,8 +253,11 @@ async function getActiveTab() {
 async function getMeetingTitle(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
-    // Meet tab titles look like "My Meeting - Google Meet"
-    return tab.title.replace(/\s*[-–]\s*Google Meet\s*$/i, '').trim() || 'Google Meet';
+    // Tab title formats: "My Meeting - Google Meet" or "Meet - My Meeting"
+    return tab.title
+      .replace(/\s*[-–]\s*Google Meet\s*$/i, '')
+      .replace(/^(?:Google\s+)?Meet\s*[-–]\s*/i, '')
+      .trim() || 'Google Meet';
   } catch {
     return 'Google Meet';
   }

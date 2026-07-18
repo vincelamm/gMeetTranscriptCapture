@@ -39,6 +39,17 @@ export function buildFilename(startTime, format = 'txt') {
 }
 
 /**
+ * Replace Meet's generic "You" speaker label with the detected local user name.
+ * Meet uses locale-specific words for the local user's captions (e.g. "You", "Du", "Vous").
+ */
+function resolveSpeaker(speaker, localUser) {
+  if (localUser && /^(you|vous|du|tú|tu|ty|вы|あなた)$/i.test(speaker.trim())) {
+    return localUser;
+  }
+  return speaker;
+}
+
+/**
  * Build a meeting info block for headers.
  * @param {object|null} meetingInfo
  * @param {'txt'|'md'} format
@@ -85,10 +96,11 @@ export function formatTxt(lines, meetingTitle, startTime, meetingInfo = null) {
     '',
   ];
 
+  const localUser = meetingInfo?.localUser;
   const body = lines
     .map(({ speaker, text, timestamp }) => {
       const relTime = formatDuration(timestamp - startTime);
-      return `[${relTime}] ${speaker}\n${text}\n`;
+      return `[${relTime}] ${resolveSpeaker(speaker, localUser)}\n${text}\n`;
     })
     .join('\n');
 
@@ -120,10 +132,11 @@ export function formatMd(lines, meetingTitle, startTime, meetingInfo = null) {
     '',
   ];
 
+  const localUser = meetingInfo?.localUser;
   const body = lines
     .map(({ speaker, text, timestamp }) => {
       const relTime = formatDuration(timestamp - startTime);
-      return `**[${relTime}] ${speaker}**  \n${text}\n`;
+      return `**[${relTime}] ${resolveSpeaker(speaker, localUser)}**  \n${text}\n`;
     })
     .join('\n');
 
@@ -162,10 +175,11 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
     ? `Hinweis: Im Transkript ist „${meetingInfo.localUser}" die Person, die dieses Protokoll verfasst.`
     : '';
 
+  const localUser = meetingInfo?.localUser;
   const transcriptBody = lines
     .map(({ speaker, text, timestamp }) => {
       const relTime = formatDuration(timestamp - startTime);
-      return `[${relTime}] ${speaker}: ${text}`;
+      return `[${relTime}] ${resolveSpeaker(speaker, localUser)}: ${text}`;
     })
     .join('\n');
 
