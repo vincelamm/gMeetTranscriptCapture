@@ -325,53 +325,88 @@ function findMeetingDetailsPanel() {
 
 /**
  * Extract structured data from the Meeting details panel.
- * Each field is only set if a confident value is found.
+ *
+ * DOM structure (verified against live Meet HTML, Jul 2026):
+ *
+ *   aside
+ *     div[jsname="I2egDd"]
+ *       div[jsname="Pitq3d"]          ← title / description / schedule
+ *         div[role="heading"]         ← meeting title
+ *         div.jn4CRe                  ← description (no label, plain text)
+ *         div.GsLSib                  ← schedule: <i>schedule</i> + <div>date</div>
+ *       div[jsname="aVg3Fb"]          ← joining info section
+ *         div[role="heading"]         ← "Joining info"
+ *         span                        ← meet URL
+ *         "(CC) +xx ..."              ← dial-in
  */
 function extractFromDetailsPanel(panel, info) {
-  const fullText = panel.textContent;
+  // ── Title / Description / Schedule ──────────────────────────────────────
+  // Primary: use the known jsname for the content area.
+  const contentArea = panel.querySelector('[jsname="Pitq3d"]');
+  if (contentArea) {
+    for (const child of contentArea.children) {
+      if (child.getAttribute('role') === 'heading') continue; // skip meeting title
 
-  // --- Scheduled date / time ---
-  // Matches English: "Sat, Jul 18, 2026 9:00 AM – 10:00 AM"
-  // Matches German:  "Sa., 18. Juli 2026, 10:00–11:00 Uhr"
-  const TIME_PATTERNS = [
-    // English: weekday, Month DD, YYYY H:MM AM – H:MM AM
-    /(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)\s*[-–]\s*\d{1,2}:\d{2}\s*(?:AM|PM)/i,
-    // German: Mo., 18. Juli 2026, 10:00–11:00
-    /(?:Mo|Di|Mi|Do|Fr|Sa|So)\.?,?\s*\d{1,2}\.\s*(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez)[a-z]*\.?\s*\d{4},?\s*\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}/i,
-    // Fallback: any "Month DD, YYYY H:MM – H:MM" without weekday
-    /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\s*[-–]\s*\d{1,2}:\d{2}\s*(?:AM|PM)?/i,
-  ];
-  for (const pattern of TIME_PATTERNS) {
-    const m = fullText.match(pattern);
-    if (m) { info.scheduledTime = m[0].replace(/\s+/g, ' ').trim(); break; }
+      // Schedule row: identified by a Material Icon named "schedule"
+      const scheduleIcon = [...child.querySelectorAll('i')].find(i => i.textContent.trim() === 'schedule');
+      if (scheduleIcon) {
+        // Time text is the sibling div next to the icon
+        const timeEl = scheduleIcon.nextElementSibling;
+        const timeText = timeEl?.textContent.trim() || child.textContent.replace('schedule', '').trim();
+        if (timeText && /\d{1,2}:\d{2}/.test(timeText) && !info.scheduledTime) {
+          info.scheduledTime = timeText;
+        }
+        continue;
+      }
+
+      // Any remaining direct child with text = description
+      const text = child.textContent.trim();
+      if (!info.description && text.length > 5 && text.length < 1000 && !/^https?:/.test(text)) {
+        info.description = text;
+      }
+    }
+  } else {
+    // Fallback: extract schedule from full panel text via regex
+    const TIME_PATTERNS = [
+      /(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)\s*[-–]\s*\d{1,2}:\d{2}\s*(?:AM|PM)/i,
+      /(?:Mo|Di|Mi|Do|Fr|Sa|So)\.?,?\s*\d{1,2}\.\s*(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez)[a-z]*\.?\s*\d{4},?\s*\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}/i,
+      /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\s*[-–]\s*\d{1,2}:\d{2}\s*(?:AM|PM)?/i,
+    ];
+    const fullText = panel.textContent;
+    for (const p of TIME_PATTERNS) {
+      const m = p.exec(fullText);
+      if (m) { info.scheduledTime = m[0].replace(/\s+/g, ' ').trim(); break; }
+    }
   }
 
-  // --- Meet join URL ---
-  const meetUrlMatch = fullText.match(/https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/);
+  // ── Joining info ─────────────────────────────────────────────────────────
+  // jsname="aVg3Fb" is the joining info container — scope lookups to it
+  // to avoid false matches elsewhere in the panel.
+  const joiningSection = panel.querySelector('[jsname="aVg3Fb"]') || panel;
+  const joiningText = joiningSection.textContent;
+
+  const meetUrlMatch = joiningText.match(/https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/);
   if (meetUrlMatch) info.meetUrl = meetUrlMatch[0];
 
-  // --- Phone dial-in number ---
-  // Matches "(DE) +49 40 80816184..." style lines
-  const phoneMatch = fullText.match(/\(\w{2,3}\)\s*\+[\d\s\-()]{7,20}/);
+  const phoneMatch = joiningText.match(/\(\w{2,3}\)\s*\+[\d\s\-()]{7,25}/);
   if (phoneMatch) info.dialIn = phoneMatch[0].trim();
 
-  // --- Organizer ---
-  // Google Meet shows "Name - Organizer" in the guest list
+  // ── Organizer & Guests ───────────────────────────────────────────────────
+  // Not shown in the verified DOM — handled by extractParticipantsFromPeoplePanel
+  // when the People panel is open. Keep a regex fallback in case future Meet
+  // versions add a guest list to the details panel.
+  const fullText = panel.textContent;
   const organizerMatch = fullText.match(/([^\n\r,]{2,60}?)\s*[-–]\s*(?:organizer|organisator|organisateur|organizador)/i);
   if (organizerMatch) info.organizer = organizerMatch[1].trim();
 
-  // --- Guests / Attendees ---
-  // Look for a section whose label matches "Guests", "Gäste", etc.
   const guestSection = findSectionByLabel(panel,
     /^(guests?|gäste?|attendees?|teilnehmer|eingeladene|invités?|invitados?)$/i
   );
   if (guestSection) {
-    // Each guest is typically in a listitem or a direct child element
     const items = guestSection.querySelectorAll('[role="listitem"], li, [data-hovercard-id]');
     const names = [...(items.length > 0 ? items : guestSection.children)]
       .map(el => {
         const raw = el.textContent.trim().split('\n')[0];
-        // Detect local user by "(you)" marker in the guest list
         if (!info.localUser && /\(you\)/i.test(raw)) {
           info.localUser = raw
             .replace(/\s*[-–]\s*(?:organizer|organisator|organisateur)/i, '')
@@ -383,40 +418,6 @@ function extractFromDetailsPanel(panel, info) {
       })
       .filter(n => n.length > 1 && n.length < 80 && !/^https?:/.test(n));
     if (names.length > 0) info.participants = [...new Set(names)];
-  }
-
-  // --- Description ---
-  // Google Meet shows the description as plain text between the scheduled time
-  // and the "Joining info" section — no "Description" heading is rendered.
-  // Use regex match indices directly (avoid indexOf which breaks after whitespace
-  // normalisation of info.scheduledTime).
-  const JOINING_SECTION_RE = /joining info|beitrittsinfos|informations de participation|información para unirse/i;
-  const joiningMatch = JOINING_SECTION_RE.exec(fullText);
-
-  let timeEnd = -1;
-  for (const pattern of TIME_PATTERNS) {
-    const m = pattern.exec(fullText);
-    if (m) { timeEnd = m.index + m[0].length; break; }
-  }
-
-  if (joiningMatch && timeEnd > 0 && joiningMatch.index > timeEnd) {
-    const candidate = fullText.slice(timeEnd, joiningMatch.index).trim();
-    if (candidate.length > 5 && candidate.length < 1000 && !/^https?:/.test(candidate)) {
-      info.description = candidate;
-    }
-  }
-
-  // Fallback: some Meet versions may label the section explicitly
-  if (!info.description) {
-    const descSection = findSectionByLabel(panel,
-      /^(description|beschreibung|agenda|notes?|notizen?|hinweis)$/i
-    );
-    if (descSection) {
-      const text = descSection.textContent.trim();
-      if (text.length > 5 && text.length < 1000 && !/^https?:/.test(text)) {
-        info.description = text;
-      }
-    }
   }
 }
 
