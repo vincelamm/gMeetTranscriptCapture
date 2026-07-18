@@ -256,7 +256,27 @@ function detectLocalUser(info) {
     }
   }
 
-  // 4. data-participant-id containers that hold a data-self-name child
+  // 4. "More options for [Name]" on the self-view tile.
+  //    Meet places this button on every participant tile; the self-tile is
+  //    identified by having a sibling button whose label contains "your"
+  //    (e.g. "Turn off your microphone") — remote tiles say "[Name]'s microphone".
+  //    Fallback: if only one such button exists in the DOM it must be the self-tile.
+  const MORE_OPT_RE = /^(?:More options|Weitere Optionen|Plus d'options|Más opciones|Mais opções|Altre opzioni)\s+(?:for|für|pour|para|per)\s+(.+)$/i;
+  const SELF_CTRL_RE = /\b(your|yourself|Ihre[nm]?|vous-même|su propio)\b/i;
+  const moreOptButtons = [...document.querySelectorAll('[aria-label]')]
+    .filter(el => MORE_OPT_RE.test(el.getAttribute('aria-label') || ''));
+  for (const el of moreOptButtons) {
+    const label = el.getAttribute('aria-label') || '';
+    const m = label.match(MORE_OPT_RE);
+    if (!m) continue;
+    const tile = el.closest('[data-participant-id]') || el.parentElement?.parentElement;
+    const isSelfTile = moreOptButtons.length === 1  // alone in the DOM → must be self
+      || (tile && [...tile.querySelectorAll('[aria-label]')]
+          .some(b => SELF_CTRL_RE.test(b.getAttribute('aria-label') || '')));
+    if (isSelfTile) { info.localUser = m[1].trim(); return; }
+  }
+
+  // 5. data-participant-id containers that hold a data-self-name child
   for (const container of document.querySelectorAll('[data-participant-id]')) {
     const nameEl = container.querySelector('[data-self-name]');
     if (nameEl) {
