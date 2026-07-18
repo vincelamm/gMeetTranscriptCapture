@@ -176,6 +176,31 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
     })
     .join('\n');
 
+  // Build the interactive clarification block
+  const missingFields = [];
+  if (!meetingTitle) missingFields.push('Gremium/Runde (Name des Arbeitskreises o. Ä.)');
+  if (!localUser)    missingFields.push('Protokollführung (Name der protokollierenden Person)');
+
+  const participantLine = participants.length > 0
+    ? `Aus dem Transkript erkannte Teilnehmende: **${participants.join(', ')}**`
+    : 'Aus dem Transkript konnten keine Teilnehmenden erkannt werden.';
+
+  const clarificationBlock = [
+    '## Vor dem Schreiben: Bitte stelle diese Fragen',
+    '',
+    'Stelle mir **alle folgenden Fragen in einer einzigen Nachricht** und warte auf meine Antwort, bevor du das Protokoll erstellst:',
+    '',
+    ...(missingFields.length > 0 ? [
+      '**Fehlende Rahmendaten:**',
+      ...missingFields.map(f => `- ${f}?`),
+      '',
+    ] : []),
+    `**Teilnehmende:** ${participantLine}`,
+    '- Ist diese Liste vollständig? Falls nicht: wer fehlt oder war nicht anwesend?',
+    '',
+    'Erst nach meiner Antwort erstellst du das Protokoll.',
+  ];
+
   return [
     'Du bist eine erfahrene Protokollant*in. Erstelle aus dem folgenden Meeting-Transkript ein professionelles Ergebnisprotokoll.',
     ...(localUserNote ? ['', localUserNote] : []),
@@ -183,6 +208,8 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
     '## Rahmendaten',
     '',
     ...rahmendaten,
+    '',
+    ...clarificationBlock,
     '',
     '## Anforderungen an das Protokoll',
     '',
