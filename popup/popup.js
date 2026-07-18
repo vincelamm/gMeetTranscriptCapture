@@ -234,3 +234,5 @@ btnClear.addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 connectPort();
 initialize();
+document.getElementById('footer-version').textContent =
+  `v${chrome.runtime.getManifest().version}`;

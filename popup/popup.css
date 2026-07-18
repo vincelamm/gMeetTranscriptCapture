@@ -189,6 +189,13 @@ hr {
   margin-bottom: 2px;
 }
 
+#footer-version {
+  text-align: center;
+  font-size: 11px;
+  color: #bdc1c6;
+  margin-top: 12px;
+}
+
 .cc-warning kbd {
   display: inline-block;
   padding: 1px 5px;

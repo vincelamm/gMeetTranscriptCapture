@@ -377,16 +377,33 @@ function extractFromDetailsPanel(panel, info) {
     if (names.length > 0) info.participants = [...new Set(names)];
   }
 
-  // --- Description / Agenda ---
-  // Find a section labeled "Description", "Beschreibung", "Agenda", etc.
-  const descSection = findSectionByLabel(panel,
-    /^(description|beschreibung|agenda|notes?|notizen?|hinweis)$/i
-  );
-  if (descSection) {
-    const text = descSection.textContent.trim();
-    // Exclude very short strings and strings that look like join-links
-    if (text.length > 5 && text.length < 1000 && !/^https?:/.test(text)) {
-      info.description = text;
+  // --- Description ---
+  // Google Meet shows the description as plain text between the scheduled time
+  // and the "Joining info" section — no "Description" heading is rendered.
+  // Primary strategy: slice fullText between these two landmarks.
+  const JOINING_SECTION_RE = /joining info|beitrittsinfos|informations de participation|información para unirse/i;
+  const joiningMatch = JOINING_SECTION_RE.exec(fullText);
+  const timeStr = info.scheduledTime;
+  const timeIdx = timeStr ? fullText.indexOf(timeStr) : -1;
+  const timeEnd = timeIdx >= 0 ? timeIdx + timeStr.length : -1;
+
+  if (joiningMatch && timeEnd > 0 && joiningMatch.index > timeEnd) {
+    const candidate = fullText.slice(timeEnd, joiningMatch.index).trim();
+    if (candidate.length > 5 && candidate.length < 1000 && !/^https?:/.test(candidate)) {
+      info.description = candidate;
+    }
+  }
+
+  // Fallback: some Meet versions may label the section explicitly
+  if (!info.description) {
+    const descSection = findSectionByLabel(panel,
+      /^(description|beschreibung|agenda|notes?|notizen?|hinweis)$/i
+    );
+    if (descSection) {
+      const text = descSection.textContent.trim();
+      if (text.length > 5 && text.length < 1000 && !/^https?:/.test(text)) {
+        info.description = text;
+      }
     }
   }
 }
