@@ -196,6 +196,21 @@ hr {
   margin-top: 12px;
 }
 
+#footer-update {
+  text-align: center;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+#footer-update a {
+  color: #1a73e8;
+  text-decoration: none;
+}
+
+#footer-update a:hover {
+  text-decoration: underline;
+}
+
 .cc-warning kbd {
   display: inline-block;
   padding: 1px 5px;

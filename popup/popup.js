@@ -230,9 +230,50 @@ btnClear.addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Update check
+// ---------------------------------------------------------------------------
+async function checkForUpdate() {
+  const CACHE_KEY = 'updateCheck';
+  const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+  const { updateCheck } = await chrome.storage.local.get(CACHE_KEY);
+  const now = Date.now();
+
+  let latestTag;
+  if (updateCheck && (now - updateCheck.ts) < CACHE_TTL_MS) {
+    latestTag = updateCheck.tag;
+  } else {
+    try {
+      const res = await fetch(
+        'https://api.github.com/repos/vincelamm/gMeetTranscriptCapture/releases/latest',
+        { headers: { Accept: 'application/vnd.github+json' } }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      latestTag = data.tag_name;
+      await chrome.storage.local.set({ [CACHE_KEY]: { ts: now, tag: latestTag } });
+    } catch {
+      return; // silently ignore network errors
+    }
+  }
+
+  if (!latestTag) return;
+  const current = chrome.runtime.getManifest().version;
+  const latest = latestTag.replace(/^v/, '');
+
+  if (latest !== current) {
+    const el = document.getElementById('footer-update');
+    el.innerHTML =
+      `<a href="https://github.com/vincelamm/gMeetTranscriptCapture/releases/latest" target="_blank">` +
+      `${latestTag} verfügbar</a>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 connectPort();
 initialize();
 document.getElementById('footer-version').textContent =
   `v${chrome.runtime.getManifest().version}`;
+checkForUpdate();
