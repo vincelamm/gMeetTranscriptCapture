@@ -19,8 +19,8 @@ After any code change, click the reload icon on the extension card in `chrome://
 ```
 manifest.json         # MV3 manifest — wires all components together
 background.js         # Service worker: state management, download trigger
-content.js            # Injected into meet.google.com: DOM observer + caption parser
-utils/formatter.js    # ES module: formats CaptionLine[] into .txt or .md
+content.js            # Injected into meet.google.com: DOM observer + caption parser + meeting info scraper
+utils/formatter.js    # ES module: formats CaptionLine[] into .txt, .md, or AI prompt
 popup/
   popup.html          # Extension popup UI
   popup.js            # Popup state machine + background messaging
@@ -35,10 +35,33 @@ icons/                # Required: icon16.png, icon48.png, icon128.png
 ```
 meet.google.com DOM
   └─ content.js (MutationObserver)
-        └─ chrome.runtime.sendMessage CAPTION_LINE
-              └─ background.js (service worker)
-                    ├─ chrome.storage.session  ← persists across SW sleep cycles
-                    └─ Port → popup.js         ← live line count updates
+        ├─ Port message CAPTION_LINE
+        │     └─ background.js (service worker)
+        │           ├─ chrome.storage.session  ← persists across SW sleep cycles
+        │           └─ Port → popup.js         ← live line count updates
+        └─ sendMessage MEETING_INFO  (fire-and-forget, ~500ms after START_CAPTURE)
+              └─ background.js → setState({ meetingInfo })
+```
+
+**Session state shape (`chrome.storage.session → captureState`):**
+
+```js
+{
+  isCapturing: boolean,
+  meetingTitle: string,       // from tab title
+  meetingInfo: {              // from DOM scraping, null if unavailable
+    scheduledTime?: string,   // "Sat, Jul 18, 2026 9:00 AM – 10:00 AM"
+    organizer?: string,
+    localUser?: string,       // the person running the extension (= "you")
+    participants?: string[],
+    description?: string,
+    meetUrl?: string,
+    dialIn?: string,
+  } | null,
+  lines: CaptionLine[],
+  startTime: number | null,   // Unix ms when capture started
+  tabId: number | null,
+}
 ```
 
 **Key design decisions:**
@@ -46,6 +69,7 @@ meet.google.com DOM
 - `chrome.storage.session` (not an in-memory variable) stores the transcript lines because the MV3 service worker is ephemeral and can be terminated mid-meeting.
 - The popup opens a long-lived `chrome.runtime.Port` (named `"popup"`) to receive push updates from the background rather than polling.
 - `background.js` uses `"type": "module"` in the manifest so it can import `utils/formatter.js` as an ES module.
+- Meeting info is scraped **fire-and-forget** so caption capture starts immediately without waiting for the panel animation.
 
 ## Auto-enable CC (Closed Captions)
 
@@ -82,17 +106,43 @@ The current `jsname` values in `SELECTORS` (top of `content.js`):
 
 **If captions stop working after a Meet update:** enable CC in Meet, open DevTools → Elements, search for the live caption text, and trace up to find the new `jsname` values. Update the `SELECTORS` object in `content.js`.
 
+## Meeting info scraping (`scrapeMeetingInfoAsync`)
+
+When capture starts, `content.js` automatically:
+
+1. Checks if the Meeting details panel is already open (`findMeetingDetailsPanel`)
+2. If not, finds the ℹ button by its `aria-label` / `data-tooltip` and clicks it
+3. Waits 450 ms for the panel to render
+4. Extracts structured fields (`extractFromDetailsPanel`):
+   - **Scheduled time** — matched via regex against English/German date patterns
+   - **Meet URL** — `https://meet.google.com/xxx-xxxx-xxx` pattern
+   - **Dial-in number** — `(CC) +xx ...` pattern
+   - **Organizer** — `Name – Organizer` pattern in the guest list
+   - **Guests/Participants** — from the Guests section in the panel
+   - **Description** — from the Description/Agenda section
+5. Detects the **local user** (`localUser`) via:
+   - `data-self-name` attribute on the user's own video tile (works without any panel open)
+   - `(you)` marker in the People panel or Meeting details guest list
+6. Closes the panel again to restore the user's UI state
+
+**If the panel structure changes after a Meet update:** enable the panel manually, open DevTools → Elements, and check what heading text / `aria-label` / DOM structure the panel uses. Update `findMeetingDetailsPanel()` and `extractFromDetailsPanel()` in `content.js`.
+
 ## Rolling caption deduplication
 
-Google Meet streams captions word-by-word. `content.js` debounces each speaker's text for 700 ms after the last DOM change. A line is committed when:
+Google Meet streams captions word-by-word. `content.js` debounces each speaker's text for 800 ms after the last DOM change. A line is committed when:
 - The debounce timer fires (speaker paused/finished)
 - The speaker's block disappears from the DOM
 - The text is not a prefix of what was already committed
+
+**Accumulation guard:** Meet sometimes accumulates multiple utterances in one growing DOM element. `commitLine()` tracks `lineStartLen` per speaker and slices already-committed text before sending. A prefix-match check ensures the slice is only applied when the DOM text genuinely starts with the previously committed content — preventing the first characters of a new utterance from being silently dropped.
 
 ## Transcript format
 
 Each `CaptionLine`: `{ speaker: string, text: string, timestamp: number }` (Unix ms).
 
-Output timestamps are relative to `startTime` (when "Start Capture" was clicked), formatted as `HH:MM:SS`.
+Output timestamps are relative to `startTime` (when "Start Capture" was clicked), formatted as `HH:MM:SS`. The header shows the actual wall-clock start time as `YYYY-MM-DD HH:MM` (local time).
 
-Two formats available: `.txt` and `.md` — both produced by `utils/formatter.js`.
+Three formats, all produced by `utils/formatter.js`:
+- `.txt` — plain text with divider lines
+- `.md` — Markdown with bold speaker names
+- **AI prompt** — wraps the transcript in a structured German prompt for generating meeting minutes (Protokoll); includes a `localUser` authorship note if the user was identified

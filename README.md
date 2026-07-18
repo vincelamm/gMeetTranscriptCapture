@@ -7,10 +7,12 @@ A Chrome extension that captures Google Meet live captions and saves them as a t
 ## Features
 
 - **Automatically enables captions** (CC) when you start capture — no need to remember to turn them on manually
-- Captures live captions from Google Meet in real time
-- Records speaker names alongside each line
+- Captures live captions from Google Meet in real time with speaker names
 - Handles Google Meet's rolling/revised captions — no duplicate lines
+- **Captures meeting metadata automatically** — opens the Meeting details panel on capture start to read scheduled time, organizer, participants, description, join URL and dial-in number
+- **Auto-detects the transcript author** — identifies your own name from the Meet UI (no manual input needed)
 - Download the transcript as **plain text** (`.txt`) or **Markdown** (`.md`)
+- **Copy an AI prompt** — wraps the transcript in a structured German protocol-generation prompt, ready to paste into Claude, ChatGPT, or any other AI tool
 - Transcript is stored for the browser session, so you can download after the meeting ends
 - Works across Meet language settings (EN, DE, FR, IT, ES, PT, NL, PL, RU, JA, ZH, KO)
 
@@ -18,13 +20,16 @@ A Chrome extension that captures Google Meet live captions and saves them as a t
 
 ```
 Meeting: Weekly Sync
-Date: 2026-03-20
+Start: 2026-07-18 09:00
 Duration: 00:47:12
+Organizer: Alice Müller
+Author: Bob Schmidt
+Participants: Alice Müller, Bob Schmidt, Carol Weiß
 ──────────────────────────────────────────────────
-[00:00:12] Alice
+[00:00:12] Alice Müller
 Hello everyone, just wanted to say the Q1 results look really strong.
 
-[00:00:34] Bob
+[00:00:34] Bob Schmidt
 Agreed. The pipeline numbers especially exceeded forecast.
 ──────────────────────────────────────────────────
 End of transcript
@@ -80,10 +85,12 @@ This tool reads Google Meet's own live captions and does not access your microph
 1. Join a Google Meet call
 2. **Inform all participants** that you will be capturing a transcript (see above)
 3. Click the **Meet Transcript Capture** icon in your toolbar
-4. Click **Start Capture** — captions will be enabled automatically if they aren't already
+4. Click **Start Capture** — captions and the Meeting details panel are enabled automatically
 5. Talk — the extension captures every line with the speaker's name
 6. When done, click **Stop Capture**
-7. Click **Download .txt** or **Download .md** to save the transcript
+7. Click **Download .txt** or **Download .md** to save the transcript, or click **KI-Prompt kopieren** to copy a ready-to-use AI prompt for generating meeting minutes
+
+> **Tip for richer meeting metadata:** the extension automatically opens the Meeting details panel when capture starts to read the scheduled time, organizer, participants and description. No manual action needed.
 
 > If auto-enable doesn't work (e.g. after a Meet UI update), the extension will show instructions to enable captions manually via the CC button or by pressing `c`.
 
