@@ -215,6 +215,222 @@ function logDiagnostics() {
 }
 
 // ---------------------------------------------------------------------------
+// Meeting info scraping
+// ---------------------------------------------------------------------------
+
+/**
+ * Automatically open the Meeting details panel (if not already open), scrape
+ * its content, then close it again to restore the user's UI state.
+ *
+ * Returns a Promise that resolves to the info object (or null).
+ * Called fire-and-forget from START_CAPTURE so caption capture is not blocked.
+ */
+async function scrapeMeetingInfoAsync() {
+  const info = {};
+
+  // --- Meeting details panel ---
+  let panel = findMeetingDetailsPanel();
+  let panelWasOpened = false;
+
+  if (!panel) {
+    const infoBtn = findMeetingInfoButton();
+    if (infoBtn) {
+      LOG('Opening Meeting details panel automatically');
+      infoBtn.click();
+      panelWasOpened = true;
+      // Wait for the panel and its content to render
+      await sleep(450);
+      panel = findMeetingDetailsPanel();
+    }
+  }
+
+  if (panel) {
+    extractFromDetailsPanel(panel, info);
+    LOG('Details panel scraped:', JSON.stringify(info));
+  }
+
+  // --- Participants from People panel (if open and guests not found yet) ---
+  if (!info.participants) {
+    extractParticipantsFromPeoplePanel(info);
+  }
+
+  // Close the panel if we opened it (restore UI state)
+  if (panelWasOpened && panel) {
+    const closeBtn =
+      panel.querySelector('[aria-label*="Close" i], [aria-label*="Schließen" i], [aria-label*="Fermer" i]')
+      || findMeetingInfoButton(); // the info button acts as a toggle
+    if (closeBtn) {
+      await sleep(100); // brief pause so the panel is visually acknowledged
+      closeBtn.click();
+      LOG('Meeting details panel closed');
+    }
+  }
+
+  const hasData = Object.keys(info).length > 0;
+  LOG('Meeting info scrape result:', hasData ? JSON.stringify(info) : 'nothing found');
+  return hasData ? info : null;
+}
+
+/** Tiny helper — avoids importing a library just for delays. */
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Find the ℹ button in Meet's header that opens the Meeting details panel.
+ * It typically carries the same aria-label / tooltip as the panel itself.
+ */
+function findMeetingInfoButton() {
+  for (const el of document.querySelectorAll('button, [role="button"]')) {
+    const label = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('data-tooltip') || '');
+    if (/meeting details|meetingdetails|besprechungsdetails|détails de la réunion|detalles/i.test(label)) {
+      return el;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find the "Meeting details" side panel.
+ * Strategy: locate the heading element whose text matches "Meeting details"
+ * (or a localized variant), then walk up to its panel container.
+ */
+function findMeetingDetailsPanel() {
+  // Try aria-label first — Meet sometimes marks the panel container directly
+  const byLabel = document.querySelector(
+    '[aria-label*="Meeting details" i], [aria-label*="Meetingdetails" i], ' +
+    '[aria-label*="Besprechungsdetails" i], [aria-label*="détails" i]'
+  );
+  if (byLabel) return byLabel;
+
+  // Walk all heading-like elements and look for the panel title text
+  const PANEL_LABELS = /^(meeting details|meetingdetails|besprechungsdetails|détails de la réunion|detalles de la reunión)$/i;
+  for (const el of document.querySelectorAll('[role="heading"], h1, h2, h3, h4')) {
+    if (PANEL_LABELS.test(el.textContent.trim())) {
+      // Walk up to find a reasonable panel container
+      return el.closest('[role="complementary"], [role="dialog"], aside')
+        || el.parentElement?.parentElement?.parentElement
+        || el.parentElement?.parentElement;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extract structured data from the Meeting details panel.
+ * Each field is only set if a confident value is found.
+ */
+function extractFromDetailsPanel(panel, info) {
+  const fullText = panel.textContent;
+
+  // --- Scheduled date / time ---
+  // Matches English: "Sat, Jul 18, 2026 9:00 AM – 10:00 AM"
+  // Matches German:  "Sa., 18. Juli 2026, 10:00–11:00 Uhr"
+  const TIME_PATTERNS = [
+    // English: weekday, Month DD, YYYY H:MM AM – H:MM AM
+    /(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)\s*[-–]\s*\d{1,2}:\d{2}\s*(?:AM|PM)/i,
+    // German: Mo., 18. Juli 2026, 10:00–11:00
+    /(?:Mo|Di|Mi|Do|Fr|Sa|So)\.?,?\s*\d{1,2}\.\s*(?:Jan|Feb|Mär|Apr|Mai|Jun|Jul|Aug|Sep|Okt|Nov|Dez)[a-z]*\.?\s*\d{4},?\s*\d{1,2}:\d{2}\s*[-–]\s*\d{1,2}:\d{2}/i,
+    // Fallback: any "Month DD, YYYY H:MM – H:MM" without weekday
+    /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\s*[-–]\s*\d{1,2}:\d{2}\s*(?:AM|PM)?/i,
+  ];
+  for (const pattern of TIME_PATTERNS) {
+    const m = fullText.match(pattern);
+    if (m) { info.scheduledTime = m[0].replace(/\s+/g, ' ').trim(); break; }
+  }
+
+  // --- Meet join URL ---
+  const meetUrlMatch = fullText.match(/https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}/);
+  if (meetUrlMatch) info.meetUrl = meetUrlMatch[0];
+
+  // --- Phone dial-in number ---
+  // Matches "(DE) +49 40 80816184..." style lines
+  const phoneMatch = fullText.match(/\(\w{2,3}\)\s*\+[\d\s\-()]{7,20}/);
+  if (phoneMatch) info.dialIn = phoneMatch[0].trim();
+
+  // --- Organizer ---
+  // Google Meet shows "Name - Organizer" in the guest list
+  const organizerMatch = fullText.match(/([^\n\r,]{2,60}?)\s*[-–]\s*(?:organizer|organisator|organisateur|organizador)/i);
+  if (organizerMatch) info.organizer = organizerMatch[1].trim();
+
+  // --- Guests / Attendees ---
+  // Look for a section whose label matches "Guests", "Gäste", etc.
+  const guestSection = findSectionByLabel(panel,
+    /^(guests?|gäste?|attendees?|teilnehmer|eingeladene|invités?|invitados?)$/i
+  );
+  if (guestSection) {
+    // Each guest is typically in a listitem or a direct child element
+    const items = guestSection.querySelectorAll('[role="listitem"], li, [data-hovercard-id]');
+    const names = [...(items.length > 0 ? items : guestSection.children)]
+      .map(el => el.textContent.trim().split('\n')[0]
+        .replace(/\s*[-–]\s*(?:organizer|organisator|organisateur)/i, '').trim())
+      .filter(n => n.length > 1 && n.length < 80 && !/^https?:/.test(n));
+    if (names.length > 0) info.participants = [...new Set(names)];
+  }
+
+  // --- Description / Agenda ---
+  // Find a section labeled "Description", "Beschreibung", "Agenda", etc.
+  const descSection = findSectionByLabel(panel,
+    /^(description|beschreibung|agenda|notes?|notizen?|hinweis)$/i
+  );
+  if (descSection) {
+    const text = descSection.textContent.trim();
+    // Exclude very short strings and strings that look like join-links
+    if (text.length > 5 && text.length < 1000 && !/^https?:/.test(text)) {
+      info.description = text;
+    }
+  }
+}
+
+/**
+ * Walk the panel's heading/label elements, find one matching labelPattern,
+ * and return the following sibling element (the content area).
+ */
+function findSectionByLabel(panel, labelPattern) {
+  for (const el of panel.querySelectorAll('[role="heading"], h3, h4, strong, b')) {
+    if (el.children.length === 0 && labelPattern.test(el.textContent.trim())) {
+      return el.nextElementSibling || el.parentElement?.nextElementSibling;
+    }
+  }
+  // Second pass: spans/divs that are standalone labels (leaf nodes)
+  for (const el of panel.querySelectorAll('span, div')) {
+    if (el.children.length === 0 && labelPattern.test(el.textContent.trim())) {
+      return el.nextElementSibling || el.parentElement?.nextElementSibling;
+    }
+  }
+  return null;
+}
+
+/** Extract participants from the People/Participants panel if it is open. */
+function extractParticipantsFromPeoplePanel(info) {
+  // Strategy 1: data-participant-id containers (reliable across Meet versions)
+  const participantContainers = document.querySelectorAll('[data-participant-id]');
+  if (participantContainers.length > 0) {
+    const names = [...participantContainers]
+      .map(el => {
+        const nameEl = el.querySelector('[data-self-name], [jsname="gNMbOd"], .zWfAib');
+        return nameEl
+          ? (nameEl.getAttribute('data-self-name') || nameEl.textContent.trim())
+          : el.getAttribute('aria-label') || '';
+      })
+      .map(n => n.replace(/\s*\(you\)\s*/i, '').trim())
+      .filter(n => n.length > 0 && n.length < 80);
+    if (names.length > 0) { info.participants = [...new Set(names)]; return; }
+  }
+
+  // Strategy 2: aria-labelled people panel list
+  const peoplePanel = document.querySelector(
+    '[aria-label*="People" i], [aria-label*="Teilnehmer" i], [aria-label*="participants" i]'
+  );
+  if (peoplePanel) {
+    const items = [...peoplePanel.querySelectorAll('[role="listitem"], li')];
+    const names = items
+      .map(el => el.textContent.trim().split('\n')[0].trim())
+      .filter(n => n.length > 0 && n.length < 80);
+    if (names.length > 0) info.participants = [...new Set(names)];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Port to background (keeps the MV3 service worker alive during capture)
 // ---------------------------------------------------------------------------
 let bgPort = null;
@@ -330,15 +546,26 @@ function commitLine(speaker) {
     lineStartLen.set(speaker, prevFull.length);
   }
 
+  // Capture previous committed text BEFORE overwriting it — needed for the
+  // accumulation check below.
+  const prevCommitted = lastCommitted.get(speaker) || '';
+
   lastCommitted.set(speaker, text);
   utteranceTimes.set(speaker, now);
 
   // Strip text already committed in previous lines (handles Meet accumulating
-  // the entire session in one growing DOM element)
+  // the entire session in one growing DOM element).
+  // Guard: only slice if the current DOM text genuinely *starts with* the
+  // previously committed prefix. Without this check, a fresh DOM element whose
+  // text happens to be longer than startLen would have its opening characters
+  // silently dropped.
   const startLen = lineStartLen.get(speaker) || 0;
-  const textToSend = (startLen > 0 && text.length > startLen)
-    ? text.slice(startLen).trim()
-    : text.trim();
+  const prefixToMatch = prevCommitted.slice(0, Math.min(startLen, 40));
+  const seemsAccumulated =
+    startLen > 0 &&
+    text.length > startLen &&
+    (prefixToMatch.length === 0 || text.startsWith(prefixToMatch));
+  const textToSend = seemsAccumulated ? text.slice(startLen).trim() : text.trim();
 
   if (!textToSend) return;
 
@@ -560,6 +787,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     openPort();
 
     LOG('Start capture requested');
+
+    // Open the Meeting details panel automatically, scrape, then close it.
+    // Fire-and-forget: caption capture starts immediately, info arrives ~500ms later.
+    scrapeMeetingInfoAsync().then(meetingInfo => {
+      if (meetingInfo) {
+        chrome.runtime.sendMessage({ type: 'MEETING_INFO', info: meetingInfo }).catch(() => {});
+      }
+    });
+
     const match = detectStrategy();
 
     if (match) {

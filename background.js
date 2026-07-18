@@ -6,7 +6,7 @@
  * content.js and handles download requests from popup.js.
  */
 
-import { formatTxt, formatMd, buildFilename } from './utils/formatter.js';
+import { formatTxt, formatMd, formatAIPrompt, buildFilename } from './utils/formatter.js';
 
 // ---------------------------------------------------------------------------
 // Storage helpers
@@ -25,6 +25,7 @@ function defaultState() {
   return {
     isCapturing: false,
     meetingTitle: '',
+    meetingInfo: null,
     lines: [],
     startTime: null,
     tabId: null,
@@ -110,6 +111,7 @@ async function handleMessage(msg, sender) {
       await setState({
         isCapturing: true,
         meetingTitle: title,
+        meetingInfo: null,
         lines: [],
         startTime: Date.now(),
         tabId: tab.id,
@@ -157,6 +159,18 @@ async function handleMessage(msg, sender) {
       return { status: 'ok' };
     }
 
+    case 'MEETING_INFO': {
+      await setState({ meetingInfo: msg.info });
+      return { status: 'ok' };
+    }
+
+    case 'GET_TRANSCRIPT_CONTENT': {
+      const state = await getState();
+      if (state.lines.length === 0) return { error: 'No lines captured yet.' };
+      const content = formatAIPrompt(state.lines, state.meetingTitle, state.startTime, state.meetingInfo);
+      return { status: 'ok', content };
+    }
+
     case 'DOWNLOAD_TRANSCRIPT': {
       const state = await getState();
       if (state.lines.length === 0) return { error: 'No lines captured yet.' };
@@ -164,8 +178,8 @@ async function handleMessage(msg, sender) {
       const format = msg.format || 'txt';
       const content =
         format === 'md'
-          ? formatMd(state.lines, state.meetingTitle, state.startTime)
-          : formatTxt(state.lines, state.meetingTitle, state.startTime);
+          ? formatMd(state.lines, state.meetingTitle, state.startTime, state.meetingInfo)
+          : formatTxt(state.lines, state.meetingTitle, state.startTime, state.meetingInfo);
 
       const filename = buildFilename(state.startTime, format);
 

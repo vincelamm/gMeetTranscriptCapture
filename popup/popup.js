@@ -23,6 +23,8 @@ const btnDownloadTxt      = document.getElementById('btn-download-txt');
 const btnDownloadMd       = document.getElementById('btn-download-md');
 const btnDownloadLiveTxt  = document.getElementById('btn-download-live-txt');
 const btnDownloadLiveMd   = document.getElementById('btn-download-live-md');
+const btnCopyPrompt       = document.getElementById('btn-copy-prompt');
+const btnCopyPromptLive   = document.getElementById('btn-copy-prompt-live');
 const btnClear            = document.getElementById('btn-clear');
 
 const capturingCount  = document.getElementById('capturing-line-count');
@@ -201,6 +203,25 @@ btnDownloadTxt.addEventListener('click',     () => sendMessage({ type: 'DOWNLOAD
 btnDownloadMd.addEventListener('click',      () => sendMessage({ type: 'DOWNLOAD_TRANSCRIPT', format: 'md' }));
 btnDownloadLiveTxt.addEventListener('click', () => sendMessage({ type: 'DOWNLOAD_TRANSCRIPT', format: 'txt' }));
 btnDownloadLiveMd.addEventListener('click',  () => sendMessage({ type: 'DOWNLOAD_TRANSCRIPT', format: 'md' }));
+
+async function copyAIPrompt(btn) {
+  const response = await sendMessage({ type: 'GET_TRANSCRIPT_CONTENT' });
+  if (response?.error) { alert(response.error); return; }
+  try {
+    await navigator.clipboard.writeText(response.content);
+    btn.textContent = 'Kopiert!';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = 'KI-Prompt kopieren';
+      btn.classList.remove('copied');
+    }, 2000);
+  } catch {
+    alert('Konnte nicht in die Zwischenablage kopieren.');
+  }
+}
+
+btnCopyPrompt.addEventListener('click',     () => copyAIPrompt(btnCopyPrompt));
+btnCopyPromptLive.addEventListener('click', () => copyAIPrompt(btnCopyPromptLive));
 
 btnClear.addEventListener('click', async () => {
   await sendMessage({ type: 'CLEAR_TRANSCRIPT' });

@@ -97,6 +97,19 @@ h2 {
 }
 .btn-ghost:hover { color: #202124; }
 
+.btn-ai {
+  background: #f0f4ff;
+  color: #1a56db;
+  border: 1px solid #c7d7f9;
+  font-size: 13px;
+}
+.btn-ai:hover { background: #e0eaff; }
+.btn-ai.copied {
+  background: #e6f4ea;
+  color: #1e8e3e;
+  border-color: #a8d5b5;
+}
+
 .row {
   display: flex;
   gap: 8px;
