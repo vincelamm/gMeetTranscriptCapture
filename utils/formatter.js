@@ -176,7 +176,7 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
     .join('\n');
 
   return [
-    'Du bist eine professionelle Protokollkraft. Erstelle aus dem folgenden Meeting-Transkript ein professionelles Ergebnisprotokoll.',
+    'Du bist eine erfahrene Protokollant*in. Erstelle aus dem folgenden Meeting-Transkript ein professionelles Ergebnisprotokoll.',
     ...(localUserNote ? ['', localUserNote] : []),
     '',
     '## Rahmendaten',
