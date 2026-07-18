@@ -230,25 +230,33 @@ function logDiagnostics() {
 function detectLocalUser(info) {
   if (info.localUser) return;
 
-  // 1. data-self-name (placed directly on the local user's video tile)
+  // 1. Google Account button — always present in Meet header.
+  //    aria-label format: "Google Account: Name (email)" or "Google-Konto: Name (email)"
+  for (const el of document.querySelectorAll('[aria-label]')) {
+    const label = el.getAttribute('aria-label') || '';
+    const accountMatch = label.match(/Google(?:[\s-](?:Account|Konto|conta|compte|cuenta|账号|アカウント)):\s*(.+?)\s*(?:\(|$)/i);
+    if (accountMatch?.[1]) { info.localUser = accountMatch[1].trim(); return; }
+  }
+
+  // 2. data-self-name attribute on the local user's video tile
   const selfEl = document.querySelector('[data-self-name]');
   if (selfEl) {
     const name = selfEl.getAttribute('data-self-name').trim();
     if (name) { info.localUser = name; return; }
   }
 
-  // 2. aria-label containing "(you)" / locale variants on ANY element —
-  //    Meet's gallery tiles and participant list items both use this pattern.
-  const YOU_RE = /\(\s*(you|vous|du|Sie|tú|tu|ty)\s*\)/i;
+  // 3. aria-label containing "(you)" / locale variants on ANY element —
+  //    e.g. "Vincent Lammers (you)" on gallery tiles or participant list items.
+  const YOU_PAREN = /\(\s*(you|vous|du|Sie|tú|tu|ty)\s*\)/i;
   for (const el of document.querySelectorAll('[aria-label]')) {
     const label = el.getAttribute('aria-label') || '';
-    if (YOU_RE.test(label)) {
-      const name = label.replace(YOU_RE, '').replace(/,\s*$/, '').trim();
+    if (YOU_PAREN.test(label)) {
+      const name = label.replace(YOU_PAREN, '').replace(/,\s*$/, '').trim();
       if (name) { info.localUser = name; return; }
     }
   }
 
-  // 3. data-participant-id elements that hold a data-self-name child
+  // 4. data-participant-id containers that hold a data-self-name child
   for (const container of document.querySelectorAll('[data-participant-id]')) {
     const nameEl = container.querySelector('[data-self-name]');
     if (nameEl) {

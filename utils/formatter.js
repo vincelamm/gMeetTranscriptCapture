@@ -50,11 +50,14 @@ function resolveSpeaker(speaker, localUser) {
 }
 
 /**
- * Extract unique speaker names from transcript lines, with "You" already resolved.
+ * Extract unique speaker names from transcript lines.
+ * "You" is resolved to localUser if known; filtered out if unknown (it's the
+ * local user — they know who they are; no point showing a raw "You" in the list).
  */
 function speakersFromLines(lines, localUser) {
+  const YOU_RE = /^(you|vous|du|tú|tu|ty|вы|あなた)$/i;
   return [...new Set(lines.map(l => resolveSpeaker(l.speaker, localUser)))]
-    .filter(s => s.length > 0);
+    .filter(s => s.length > 0 && (localUser || !YOU_RE.test(s.trim())));
 }
 
 /**
