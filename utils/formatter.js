@@ -50,53 +50,57 @@ function resolveSpeaker(speaker, localUser) {
 }
 
 /**
+ * Extract unique speaker names from transcript lines, with "You" already resolved.
+ */
+function speakersFromLines(lines, localUser) {
+  return [...new Set(lines.map(l => resolveSpeaker(l.speaker, localUser)))]
+    .filter(s => s.length > 0);
+}
+
+/**
  * Build a meeting info block for headers.
  * @param {object|null} meetingInfo
  * @param {'txt'|'md'} format
+ * @param {string[]} [fallbackParticipants]
  */
-function buildMeetingInfoBlock(meetingInfo, format) {
-  if (!meetingInfo) return [];
-  const lines = [];
-  const field = (label, value, mdLabel) => {
+function buildMeetingInfoBlock(meetingInfo, format, fallbackParticipants = []) {
+  const rows = [];
+  const field = (label, value) => {
     if (!value) return;
-    lines.push(format === 'md' ? `**${mdLabel || label}:** ${value}` : `${label}: ${value}`);
+    rows.push(format === 'md' ? `**${label}:** ${value}` : `${label}: ${value}`);
   };
-  field('Scheduled', meetingInfo.scheduledTime, 'Scheduled');
-  field('Organizer', meetingInfo.organizer, 'Organizer');
-  field('Author', meetingInfo.localUser, 'Author');
-  if (meetingInfo.participants?.length > 0) {
-    field('Participants', meetingInfo.participants.join(', '), 'Participants');
-  }
-  field('Description', meetingInfo.description, 'Description');
-  field('Join URL', meetingInfo.meetUrl, 'Join URL');
-  field('Dial-in', meetingInfo.dialIn, 'Dial-in');
-  return lines;
+  field('Terminzeit', meetingInfo?.scheduledTime);
+  field('Organisator*in', meetingInfo?.organizer);
+  field('Protokollführung', meetingInfo?.localUser);
+  const participants = meetingInfo?.participants?.length > 0
+    ? meetingInfo.participants
+    : fallbackParticipants;
+  if (participants.length > 0) field('Teilnehmende', participants.join(', '));
+  field('Beschreibung', meetingInfo?.description);
+  field('Meeting-Link', meetingInfo?.meetUrl);
+  field('Einwahl', meetingInfo?.dialIn);
+  return rows;
 }
 
 /**
  * Format an array of CaptionLines into a plain-text transcript.
- *
- * @param {Array<{speaker: string, text: string, timestamp: number}>} lines
- * @param {string} meetingTitle
- * @param {number} startTime - Unix ms when capture started
- * @param {object|null} [meetingInfo]
- * @returns {string}
  */
 export function formatTxt(lines, meetingTitle, startTime, meetingInfo = null) {
   const endTime = lines.length > 0 ? lines[lines.length - 1].timestamp : startTime;
   const duration = formatDuration(endTime - startTime);
   const divider = '─'.repeat(50);
+  const localUser = meetingInfo?.localUser;
+  const fallback = speakersFromLines(lines, localUser);
 
   const headerLines = [
     `Meeting: ${meetingTitle || 'Google Meet'}`,
     `Start: ${formatDate(startTime)}`,
-    `Duration: ${duration}`,
-    ...buildMeetingInfoBlock(meetingInfo, 'txt'),
+    `Dauer: ${duration}`,
+    ...buildMeetingInfoBlock(meetingInfo, 'txt', fallback),
     divider,
     '',
   ];
 
-  const localUser = meetingInfo?.localUser;
   const body = lines
     .map(({ speaker, text, timestamp }) => {
       const relTime = formatDuration(timestamp - startTime);
@@ -104,35 +108,28 @@ export function formatTxt(lines, meetingTitle, startTime, meetingInfo = null) {
     })
     .join('\n');
 
-  const footer = [divider, 'End of transcript'].join('\n');
-
-  return headerLines.join('\n') + body + footer;
+  return headerLines.join('\n') + body + [divider, 'Ende des Transkripts'].join('\n');
 }
 
 /**
  * Format an array of CaptionLines into a Markdown transcript.
- *
- * @param {Array<{speaker: string, text: string, timestamp: number}>} lines
- * @param {string} meetingTitle
- * @param {number} startTime - Unix ms when capture started
- * @param {object|null} [meetingInfo]
- * @returns {string}
  */
 export function formatMd(lines, meetingTitle, startTime, meetingInfo = null) {
   const endTime = lines.length > 0 ? lines[lines.length - 1].timestamp : startTime;
   const duration = formatDuration(endTime - startTime);
+  const localUser = meetingInfo?.localUser;
+  const fallback = speakersFromLines(lines, localUser);
 
   const headerLines = [
-    `# Meeting Transcript: ${meetingTitle || 'Google Meet'}`,
+    `# Meeting-Transkript: ${meetingTitle || 'Google Meet'}`,
     `**Start:** ${formatDate(startTime)}  `,
-    `**Duration:** ${duration}`,
-    ...buildMeetingInfoBlock(meetingInfo, 'md').map(l => `${l}  `),
+    `**Dauer:** ${duration}`,
+    ...buildMeetingInfoBlock(meetingInfo, 'md', fallback).map(l => `${l}  `),
     '',
     '---',
     '',
   ];
 
-  const localUser = meetingInfo?.localUser;
   const body = lines
     .map(({ speaker, text, timestamp }) => {
       const relTime = formatDuration(timestamp - startTime);
@@ -145,12 +142,6 @@ export function formatMd(lines, meetingTitle, startTime, meetingInfo = null) {
 
 /**
  * Wrap transcript in an AI prompt for generating meeting minutes (Protokoll).
- *
- * @param {Array<{speaker: string, text: string, timestamp: number}>} lines
- * @param {string} meetingTitle
- * @param {number} startTime
- * @param {object|null} [meetingInfo]
- * @returns {string}
  */
 export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = null) {
   const endTime = lines.length > 0 ? lines[lines.length - 1].timestamp : startTime;
@@ -158,15 +149,19 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
   const localUser = meetingInfo?.localUser;
   const ph = '[PLATZHALTER]';
 
-  // Pre-fill Rahmendaten from scraped metadata; fall back to placeholder
+  // Teilnehmende: prefer scraped list, fall back to speakers in transcript
+  const participants = meetingInfo?.participants?.length > 0
+    ? meetingInfo.participants
+    : speakersFromLines(lines, localUser);
+
   const rahmendaten = [
     `- Gremium/Runde: ${meetingTitle || ph}`,
     `- Datum: ${meetingInfo?.scheduledTime || formatDate(startTime)}`,
     `- Format: Online (Google Meet)`,
-    `- Teilnehmende: ${meetingInfo?.participants?.length > 0 ? meetingInfo.participants.join(', ') : ph}`,
+    `- Teilnehmende: ${participants.length > 0 ? participants.join(', ') : ph}`,
     `- Protokollführung: ${localUser || ph}`,
   ];
-  if (meetingInfo?.organizer) rahmendaten.push(`- Organisator/in: ${meetingInfo.organizer}`);
+  if (meetingInfo?.organizer) rahmendaten.push(`- Organisator*in: ${meetingInfo.organizer}`);
   if (meetingInfo?.description) rahmendaten.push(`- Agenda/Beschreibung: ${meetingInfo.description.trim()}`);
 
   const localUserNote = localUser
@@ -181,7 +176,7 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
     .join('\n');
 
   return [
-    'Du bist ein erfahrener Protokollant. Erstelle aus dem folgenden Meeting-Transkript ein professionelles Ergebnisprotokoll.',
+    'Du bist eine professionelle Protokollkraft. Erstelle aus dem folgenden Meeting-Transkript ein professionelles Ergebnisprotokoll.',
     ...(localUserNote ? ['', localUserNote] : []),
     '',
     '## Rahmendaten',
