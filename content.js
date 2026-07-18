@@ -228,6 +228,14 @@ function logDiagnostics() {
 async function scrapeMeetingInfoAsync() {
   const info = {};
 
+  // Always check data-self-name first — it sits on the local user's own video
+  // tile and is available without any panel being open.
+  const selfEl = document.querySelector('[data-self-name]');
+  if (selfEl) {
+    const name = selfEl.getAttribute('data-self-name').trim();
+    if (name) info.localUser = name;
+  }
+
   // --- Meeting details panel ---
   let panel = findMeetingDetailsPanel();
   let panelWasOpened = false;
@@ -380,12 +388,16 @@ function extractFromDetailsPanel(panel, info) {
   // --- Description ---
   // Google Meet shows the description as plain text between the scheduled time
   // and the "Joining info" section — no "Description" heading is rendered.
-  // Primary strategy: slice fullText between these two landmarks.
+  // Use regex match indices directly (avoid indexOf which breaks after whitespace
+  // normalisation of info.scheduledTime).
   const JOINING_SECTION_RE = /joining info|beitrittsinfos|informations de participation|información para unirse/i;
   const joiningMatch = JOINING_SECTION_RE.exec(fullText);
-  const timeStr = info.scheduledTime;
-  const timeIdx = timeStr ? fullText.indexOf(timeStr) : -1;
-  const timeEnd = timeIdx >= 0 ? timeIdx + timeStr.length : -1;
+
+  let timeEnd = -1;
+  for (const pattern of TIME_PATTERNS) {
+    const m = pattern.exec(fullText);
+    if (m) { timeEnd = m.index + m[0].length; break; }
+  }
 
   if (joiningMatch && timeEnd > 0 && joiningMatch.index > timeEnd) {
     const candidate = fullText.slice(timeEnd, joiningMatch.index).trim();

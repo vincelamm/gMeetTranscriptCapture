@@ -183,8 +183,10 @@ async function handleMessage(msg, sender) {
 
       const filename = buildFilename(state.startTime, format);
 
-      // Encode as a data URL and trigger download
-      const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`;
+      // Encode as a data URL and trigger download.
+      // Use text/markdown for .md files so Chrome preserves the extension.
+      const mimeType = format === 'md' ? 'text/markdown' : 'text/plain';
+      const dataUrl = `data:${mimeType};charset=utf-8,${encodeURIComponent(content)}`;
       await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
 
       // Notify content script that transcript was downloaded (disables unload guard)
