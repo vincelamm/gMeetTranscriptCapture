@@ -361,8 +361,18 @@ function extractFromDetailsPanel(panel, info) {
     // Each guest is typically in a listitem or a direct child element
     const items = guestSection.querySelectorAll('[role="listitem"], li, [data-hovercard-id]');
     const names = [...(items.length > 0 ? items : guestSection.children)]
-      .map(el => el.textContent.trim().split('\n')[0]
-        .replace(/\s*[-–]\s*(?:organizer|organisator|organisateur)/i, '').trim())
+      .map(el => {
+        const raw = el.textContent.trim().split('\n')[0];
+        // Detect local user by "(you)" marker in the guest list
+        if (!info.localUser && /\(you\)/i.test(raw)) {
+          info.localUser = raw
+            .replace(/\s*[-–]\s*(?:organizer|organisator|organisateur)/i, '')
+            .replace(/\s*\(you\)\s*/i, '').trim();
+        }
+        return raw
+          .replace(/\s*[-–]\s*(?:organizer|organisator|organisateur)/i, '')
+          .replace(/\s*\(you\)\s*/i, '').trim();
+      })
       .filter(n => n.length > 1 && n.length < 80 && !/^https?:/.test(n));
     if (names.length > 0) info.participants = [...new Set(names)];
   }
@@ -400,19 +410,31 @@ function findSectionByLabel(panel, labelPattern) {
   return null;
 }
 
-/** Extract participants from the People/Participants panel if it is open. */
+/** Extract participants (and detect the local user) from the People panel if open. */
 function extractParticipantsFromPeoplePanel(info) {
+  // Broadest fallback: data-self-name attribute is placed on the local user's
+  // own tile even when no panel is open — check this first.
+  if (!info.localUser) {
+    const selfEl = document.querySelector('[data-self-name]');
+    if (selfEl) info.localUser = selfEl.getAttribute('data-self-name').trim() || undefined;
+  }
+
   // Strategy 1: data-participant-id containers (reliable across Meet versions)
   const participantContainers = document.querySelectorAll('[data-participant-id]');
   if (participantContainers.length > 0) {
     const names = [...participantContainers]
       .map(el => {
         const nameEl = el.querySelector('[data-self-name], [jsname="gNMbOd"], .zWfAib');
-        return nameEl
-          ? (nameEl.getAttribute('data-self-name') || nameEl.textContent.trim())
-          : el.getAttribute('aria-label') || '';
+        const selfName = nameEl?.getAttribute('data-self-name');
+        // data-self-name only appears on the local user's element
+        if (selfName && !info.localUser) info.localUser = selfName.trim();
+        const raw = selfName || nameEl?.textContent.trim() || el.getAttribute('aria-label') || '';
+        // "(you)" in aria-label is another signal for the local user
+        if (!info.localUser && /\(you\)/i.test(raw)) {
+          info.localUser = raw.replace(/\s*\(you\)\s*/i, '').trim();
+        }
+        return raw.replace(/\s*\(you\)\s*/i, '').trim();
       })
-      .map(n => n.replace(/\s*\(you\)\s*/i, '').trim())
       .filter(n => n.length > 0 && n.length < 80);
     if (names.length > 0) { info.participants = [...new Set(names)]; return; }
   }
@@ -424,7 +446,13 @@ function extractParticipantsFromPeoplePanel(info) {
   if (peoplePanel) {
     const items = [...peoplePanel.querySelectorAll('[role="listitem"], li')];
     const names = items
-      .map(el => el.textContent.trim().split('\n')[0].trim())
+      .map(el => {
+        const raw = el.textContent.trim().split('\n')[0].trim();
+        if (!info.localUser && /\(you\)/i.test(raw)) {
+          info.localUser = raw.replace(/\s*\(you\)\s*/i, '').trim();
+        }
+        return raw.replace(/\s*\(you\)\s*/i, '').trim();
+      })
       .filter(n => n.length > 0 && n.length < 80);
     if (names.length > 0) info.participants = [...new Set(names)];
   }

@@ -52,6 +52,7 @@ function buildMeetingInfoBlock(meetingInfo, format) {
   };
   field('Scheduled', meetingInfo.scheduledTime, 'Scheduled');
   field('Organizer', meetingInfo.organizer, 'Organizer');
+  field('Author', meetingInfo.localUser, 'Author');
   if (meetingInfo.participants?.length > 0) {
     field('Participants', meetingInfo.participants.join(', '), 'Participants');
   }
@@ -149,12 +150,17 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
   ];
   if (meetingInfo?.scheduledTime) metaLines.push(`Terminzeit: ${meetingInfo.scheduledTime}`);
   if (meetingInfo?.organizer) metaLines.push(`Organisator: ${meetingInfo.organizer}`);
+  if (meetingInfo?.localUser) metaLines.push(`Verfasser/in: ${meetingInfo.localUser}`);
   if (meetingInfo?.participants?.length > 0) {
     metaLines.push(`Teilnehmer: ${meetingInfo.participants.join(', ')}`);
   }
   if (meetingInfo?.description) {
     metaLines.push(`Beschreibung: ${meetingInfo.description.trim()}`);
   }
+
+  const localUserNote = meetingInfo?.localUser
+    ? `Hinweis: Im Transkript ist „${meetingInfo.localUser}" die Person, die dieses Protokoll verfasst.`
+    : '';
 
   const transcriptBody = lines
     .map(({ speaker, text, timestamp }) => {
@@ -165,6 +171,7 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
 
   return [
     'Du bist ein professioneller Meeting-Assistent. Erstelle ein strukturiertes Protokoll auf Basis des folgenden Transkripts.',
+    ...(localUserNote ? [localUserNote] : []),
     '',
     'Das Protokoll soll folgende Abschnitte enthalten:',
     '1. **Zusammenfassung** – Was wurde besprochen? (2–4 Sätze)',
