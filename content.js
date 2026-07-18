@@ -219,6 +219,46 @@ function logDiagnostics() {
 // ---------------------------------------------------------------------------
 
 /**
+ * Detect the local user's real name from the Meet DOM without opening any panel.
+ *
+ * Strategies (tried in order, stops at first hit):
+ *   1. data-self-name attribute on the local user's video tile
+ *   2. aria-label on any element that includes "(you)" or a locale variant,
+ *      e.g. "Vincent Lammers (you)" on the gallery tile or participant list item
+ *   3. data-participant-id containers that include a data-self-name child
+ */
+function detectLocalUser(info) {
+  if (info.localUser) return;
+
+  // 1. data-self-name (placed directly on the local user's video tile)
+  const selfEl = document.querySelector('[data-self-name]');
+  if (selfEl) {
+    const name = selfEl.getAttribute('data-self-name').trim();
+    if (name) { info.localUser = name; return; }
+  }
+
+  // 2. aria-label containing "(you)" / locale variants on ANY element —
+  //    Meet's gallery tiles and participant list items both use this pattern.
+  const YOU_RE = /\(\s*(you|vous|du|Sie|tú|tu|ty)\s*\)/i;
+  for (const el of document.querySelectorAll('[aria-label]')) {
+    const label = el.getAttribute('aria-label') || '';
+    if (YOU_RE.test(label)) {
+      const name = label.replace(YOU_RE, '').replace(/,\s*$/, '').trim();
+      if (name) { info.localUser = name; return; }
+    }
+  }
+
+  // 3. data-participant-id elements that hold a data-self-name child
+  for (const container of document.querySelectorAll('[data-participant-id]')) {
+    const nameEl = container.querySelector('[data-self-name]');
+    if (nameEl) {
+      const name = nameEl.getAttribute('data-self-name').trim();
+      if (name) { info.localUser = name; return; }
+    }
+  }
+}
+
+/**
  * Automatically open the Meeting details panel (if not already open), scrape
  * its content, then close it again to restore the user's UI state.
  *
@@ -228,13 +268,7 @@ function logDiagnostics() {
 async function scrapeMeetingInfoAsync() {
   const info = {};
 
-  // Always check data-self-name first — it sits on the local user's own video
-  // tile and is available without any panel being open.
-  const selfEl = document.querySelector('[data-self-name]');
-  if (selfEl) {
-    const name = selfEl.getAttribute('data-self-name').trim();
-    if (name) info.localUser = name;
-  }
+  detectLocalUser(info);
 
   // --- Meeting details panel ---
   let panel = findMeetingDetailsPanel();
@@ -273,6 +307,9 @@ async function scrapeMeetingInfoAsync() {
       LOG('Meeting details panel closed');
     }
   }
+
+  // Final pass: DOM may have rendered more tiles after the 450 ms panel wait
+  detectLocalUser(info);
 
   const hasData = Object.keys(info).length > 0;
   LOG('Meeting info scrape result:', hasData ? JSON.stringify(info) : 'nothing found');
@@ -436,12 +473,10 @@ function findSectionByLabel(panel, labelPattern) {
 
 /** Extract participants (and detect the local user) from the People panel if open. */
 function extractParticipantsFromPeoplePanel(info) {
-  // Broadest fallback: data-self-name attribute is placed on the local user's
-  // own tile even when no panel is open — check this first.
-  if (!info.localUser) {
-    const selfEl = document.querySelector('[data-self-name]');
-    if (selfEl) info.localUser = selfEl.getAttribute('data-self-name').trim() || undefined;
-  }
+  // Re-run user detection now that more DOM might be rendered
+  detectLocalUser(info);
+
+  const YOU_RE = /\(\s*(you|vous|du|Sie|tú|tu|ty)\s*\)/i;
 
   // Strategy 1: data-participant-id containers (reliable across Meet versions)
   const participantContainers = document.querySelectorAll('[data-participant-id]');
@@ -449,15 +484,10 @@ function extractParticipantsFromPeoplePanel(info) {
     const names = [...participantContainers]
       .map(el => {
         const nameEl = el.querySelector('[data-self-name], [jsname="gNMbOd"], .zWfAib');
-        const selfName = nameEl?.getAttribute('data-self-name');
-        // data-self-name only appears on the local user's element
-        if (selfName && !info.localUser) info.localUser = selfName.trim();
-        const raw = selfName || nameEl?.textContent.trim() || el.getAttribute('aria-label') || '';
-        // "(you)" in aria-label is another signal for the local user
-        if (!info.localUser && /\(you\)/i.test(raw)) {
-          info.localUser = raw.replace(/\s*\(you\)\s*/i, '').trim();
-        }
-        return raw.replace(/\s*\(you\)\s*/i, '').trim();
+        const raw = nameEl?.getAttribute('data-self-name')
+          || nameEl?.textContent.trim()
+          || el.getAttribute('aria-label') || '';
+        return raw.replace(YOU_RE, '').replace(/,\s*$/, '').trim();
       })
       .filter(n => n.length > 0 && n.length < 80);
     if (names.length > 0) { info.participants = [...new Set(names)]; return; }
@@ -470,13 +500,7 @@ function extractParticipantsFromPeoplePanel(info) {
   if (peoplePanel) {
     const items = [...peoplePanel.querySelectorAll('[role="listitem"], li')];
     const names = items
-      .map(el => {
-        const raw = el.textContent.trim().split('\n')[0].trim();
-        if (!info.localUser && /\(you\)/i.test(raw)) {
-          info.localUser = raw.replace(/\s*\(you\)\s*/i, '').trim();
-        }
-        return raw.replace(/\s*\(you\)\s*/i, '').trim();
-      })
+      .map(el => el.textContent.trim().split('\n')[0].replace(YOU_RE, '').trim())
       .filter(n => n.length > 0 && n.length < 80);
     if (names.length > 0) info.participants = [...new Set(names)];
   }
