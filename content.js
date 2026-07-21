@@ -541,16 +541,27 @@ function extractParticipantsFromPeoplePanel(info) {
     if (names.length > 0) { info.participants = [...new Set(names)]; return; }
   }
 
-  // Strategy 2: aria-labelled people panel list
-  const peoplePanel = document.querySelector(
+  // Strategy 2: aria-labelled people panel list.
+  // Scope the selector to containers that look like actual panels (not buttons),
+  // and guard against unexpected element types.
+  const peoplePanelCandidates = [...document.querySelectorAll(
     '[aria-label*="People" i], [aria-label*="Teilnehmer" i], [aria-label*="participants" i]'
+  )].filter(el =>
+    // Exclude small interactive controls (buttons, inputs) — only keep containers
+    !['BUTTON', 'INPUT', 'A', 'SELECT'].includes(el.tagName) &&
+    el.children.length > 0
   );
+  const peoplePanel = peoplePanelCandidates[0] ?? null;
   if (peoplePanel) {
-    const items = [...peoplePanel.querySelectorAll('[role="listitem"], li')];
-    const names = items
-      .map(el => el.textContent.trim().split('\n')[0].replace(YOU_RE, '').trim())
-      .filter(n => n.length > 0 && n.length < 80);
-    if (names.length > 0) info.participants = [...new Set(names)];
+    try {
+      const items = [...peoplePanel.querySelectorAll('[role="listitem"], li')];
+      const names = items
+        .map(el => el.textContent.trim().split('\n')[0].replace(YOU_RE, '').trim())
+        .filter(n => n.length > 0 && n.length < 80);
+      if (names.length > 0) info.participants = [...new Set(names)];
+    } catch (err) {
+      LOG('extractParticipantsFromPeoplePanel error:', err.message);
+    }
   }
 }
 
