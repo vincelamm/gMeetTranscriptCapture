@@ -138,22 +138,25 @@ function isSentenceFragment(str) {
 // Caption container discovery helpers
 // ---------------------------------------------------------------------------
 function findAriaLiveContainer() {
-  // Pick the aria-live="polite" element most likely to be the CC widget.
-  // Caption containers always have child elements (speaker blocks),
-  // unlike status announcements ("Your camera is on") which are flat text.
-  const candidates = [...document.querySelectorAll('[aria-live="polite"]')]
-    .filter(el => {
-      const text = el.textContent.trim();
-      if (text.length === 0) return false;
-      // Must have child elements — flat text nodes are status announcements
-      if (el.children.length === 0) return false;
-      // Exclude short status announcements (camera/mic on/off etc.)
-      // Caption containers typically grow beyond a short sentence quickly
-      if (text.length < 80 && el.children.length < 2) return false;
-      return true;
-    });
+  // Find the aria-live element most likely to be the CC widget.
+  // Caption containers have child elements (speaker blocks) even when empty;
+  // status announcements ("Your camera is on") are flat text nodes with no children.
+  // We accept empty containers — between utterances Meet clears the text but
+  // keeps the DOM structure, and the observer will catch the next utterance.
+  const candidates = [
+    // polite is standard; assertive has been observed in some Meet versions
+    ...document.querySelectorAll('[aria-live="polite"], [aria-live="assertive"]'),
+  ].filter(el => {
+    // Must have child elements — flat text nodes are status announcements
+    if (el.children.length === 0) return false;
+    const text = el.textContent.trim();
+    // Very short single-child containers are likely status announcements
+    if (text.length < 20 && el.children.length < 2) return false;
+    return true;
+  });
   if (!candidates.length) return null;
-  return candidates.sort((a, b) => b.textContent.length - a.textContent.length)[0];
+  // Prefer the container with the most child elements (speaker blocks)
+  return candidates.sort((a, b) => b.children.length - a.children.length)[0];
 }
 
 // ---------------------------------------------------------------------------
