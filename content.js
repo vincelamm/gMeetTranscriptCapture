@@ -48,6 +48,20 @@ const STRATEGIES = [
     findContainer: () => findAriaLiveContainer(),
     extractSpeakers: (container) => extractTextOnly(container),
   },
+  // Strategy F: single-aria-live — if there is exactly one live region in the
+  // entire DOM it must be the CC widget; accept it unconditionally (even when
+  // empty) so the MutationObserver starts watching before the first utterance.
+  {
+    name: 'single-aria-live',
+    findContainer: () => {
+      const all = [...document.querySelectorAll('[aria-live]')];
+      return all.length === 1 ? all[0] : null;
+    },
+    extractSpeakers: (container) => {
+      const byPos = extractByPosition(container);
+      return byPos.size > 0 ? byPos : extractTextOnly(container);
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -176,11 +190,11 @@ function detectStrategy() {
       return { strategy, container };
     }
 
-    // For jsname strategies (A/B), the container itself is a strong signal —
-    // accept it even if empty (captions may appear momentarily).
-    // For fallback strategies, require actual speaker data to avoid false positives.
-    if (strategy.name.startsWith('jsname')) {
-      LOG(`Strategy "${strategy.name}" — container found but empty, accepting (jsname match)`);
+    // For jsname strategies (A/B) and single-aria-live (F), the container
+    // itself is a strong signal — accept even when empty so the observer
+    // can start watching before the first utterance arrives.
+    if (strategy.name.startsWith('jsname') || strategy.name === 'single-aria-live') {
+      LOG(`Strategy "${strategy.name}" — container found but empty, accepting`);
       return { strategy, container };
     }
 
