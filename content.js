@@ -150,12 +150,6 @@ function findAriaLiveContainer() {
       // Exclude short status announcements (camera/mic on/off etc.)
       // Caption containers typically grow beyond a short sentence quickly
       if (text.length < 80 && el.children.length < 2) return false;
-      // Exclude CC language selection panels: each language is a selectable
-      // option/radio item, and non-default languages carry a "BETA" label.
-      // More than 3 BETA occurrences is a reliable signal that this is the
-      // language picker rather than the live caption stream.
-      if (el.querySelector('[role="option"], [role="radio"]')) return false;
-      if ((text.match(/\bBETA\b/g) || []).length > 3) return false;
       return true;
     });
   if (!candidates.length) return null;
