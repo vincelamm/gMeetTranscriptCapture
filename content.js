@@ -574,21 +574,20 @@ function openPort() {
   if (bgPort) return;
   try {
     bgPort = chrome.runtime.connect({ name: 'content-script' });
+    bgPort.onDisconnect.addListener(() => {
+      bgPort = null;
+      if (isCapturing) {
+        // SW was terminated — reconnect to wake it and resume delivery
+        setTimeout(openPort, 200);
+      }
+    });
+    LOG('Port to background opened');
   } catch (err) {
     // Extension context invalidated (tab open across extension reload) — bail out.
     // The popup's "Reload Meet tab" view will guide the user.
-    LOG('openPort failed (extension context invalidated):', err.message);
+    LOG('openPort failed:', err.message);
     bgPort = null;
-    return;
   }
-  bgPort.onDisconnect.addListener(() => {
-    bgPort = null;
-    if (isCapturing) {
-      // SW was terminated — reconnect to wake it and resume delivery
-      setTimeout(openPort, 200);
-    }
-  });
-  LOG('Port to background opened');
 }
 
 function closePort() {
