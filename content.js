@@ -190,11 +190,12 @@ function detectStrategy() {
       return { strategy, container };
     }
 
-    // For jsname strategies (A/B) and single-aria-live (F), the container
-    // itself is a strong signal — accept even when empty so the observer
-    // can start watching before the first utterance arrives.
-    if (strategy.name.startsWith('jsname') || strategy.name === 'single-aria-live') {
-      LOG(`Strategy "${strategy.name}" — container found but empty, accepting`);
+    // For jsname strategies (A/B), the container itself is a strong signal —
+    // accept it even if empty (captions may appear momentarily).
+    // For fallback strategies (C–F), require actual speaker data so we don't
+    // attach to an unrelated aria-live element before CC is enabled.
+    if (strategy.name.startsWith('jsname')) {
+      LOG(`Strategy "${strategy.name}" — container found but empty, accepting (jsname match)`);
       return { strategy, container };
     }
 
