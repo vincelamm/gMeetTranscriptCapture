@@ -11,6 +11,7 @@
 // ---------------------------------------------------------------------------
 const views = {
   noMeet:    document.getElementById('view-no-meet'),
+  reload:    document.getElementById('view-reload'),
   idle:      document.getElementById('view-idle'),
   capturing: document.getElementById('view-capturing'),
   waiting:   document.getElementById('view-waiting'),
@@ -181,6 +182,8 @@ btnStart.addEventListener('click', async () => {
   } else if (response?.status === 'ok') {
     const state = await sendMessage({ type: 'GET_STATE' });
     renderCapturing(state);
+  } else if (response?.error?.includes('Could not reach')) {
+    showView('reload');
   } else {
     alert(response?.error || 'Could not start capture.');
   }
@@ -222,6 +225,13 @@ async function copyAIPrompt(btn) {
 
 btnCopyPrompt.addEventListener('click',     () => copyAIPrompt(btnCopyPrompt));
 btnCopyPromptLive.addEventListener('click', () => copyAIPrompt(btnCopyPromptLive));
+
+document.getElementById('btn-reload-tab').addEventListener('click', () => {
+  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+    if (tab) chrome.tabs.reload(tab.id);
+    window.close();
+  });
+});
 
 btnClear.addEventListener('click', async () => {
   await sendMessage({ type: 'CLEAR_TRANSCRIPT' });

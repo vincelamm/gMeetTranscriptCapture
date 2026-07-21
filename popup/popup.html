@@ -15,6 +15,14 @@
       <p class="message">Open a Google Meet tab to use this extension.</p>
     </div>
 
+    <!-- Content script not reachable (tab needs reload) -->
+    <div id="view-reload" class="view hidden">
+      <div class="icon">🔄</div>
+      <h2>Tab reload required</h2>
+      <p class="message">The extension was updated after this tab was opened. Please reload the Meet tab to continue.</p>
+      <button id="btn-reload-tab" class="btn btn-primary">Reload Meet tab</button>
+    </div>
+
     <!-- On a Meet tab, idle -->
     <div id="view-idle" class="view hidden">
       <div class="icon">📋</div>
