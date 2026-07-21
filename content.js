@@ -156,8 +156,6 @@ function findAriaLiveContainer() {
       // language picker rather than the live caption stream.
       if (el.querySelector('[role="option"], [role="radio"]')) return false;
       if ((text.match(/\bBETA\b/g) || []).length > 3) return false;
-      // Exclude panels rendered inside a modal dialog (settings, language, etc.)
-      if (el.closest('[role="dialog"]')) return false;
       return true;
     });
   if (!candidates.length) return null;
