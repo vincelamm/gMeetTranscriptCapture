@@ -242,6 +242,15 @@ btnClear.addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 // Update check
 // ---------------------------------------------------------------------------
+function isNewerVersion(latest, current) {
+  const parse = v => v.split('.').map(Number);
+  const [lMaj, lMin, lPat] = parse(latest);
+  const [cMaj, cMin, cPat] = parse(current);
+  if (lMaj !== cMaj) return lMaj > cMaj;
+  if (lMin !== cMin) return lMin > cMin;
+  return lPat > cPat;
+}
+
 async function checkForUpdate() {
   const CACHE_KEY = 'updateCheck';
   const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -271,7 +280,7 @@ async function checkForUpdate() {
   const current = chrome.runtime.getManifest().version;
   const latest = latestTag.replace(/^v/, '');
 
-  if (latest !== current) {
+  if (isNewerVersion(latest, current)) {
     const el = document.getElementById('footer-update');
     el.innerHTML =
       `<a href="https://github.com/vincelamm/gMeetTranscriptCapture/releases/latest" target="_blank">` +
