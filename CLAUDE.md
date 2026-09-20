@@ -48,6 +48,9 @@ meet.google.com DOM
 ```js
 {
   isCapturing: boolean,
+  capturePhase: 'idle' | 'waiting_for_captions' | 'capturing',
+  ccWarning: boolean,         // captions not detected — popup shows manual steps
+  ccAction: 'clicked' | 'already_on' | 'not_found' | null,
   meetingTitle: string,       // from tab title
   meetingInfo: {              // from DOM scraping, null if unavailable
     scheduledTime?: string,   // "Sat, Jul 18, 2026 9:00 AM – 10:00 AM"
@@ -69,7 +72,19 @@ meet.google.com DOM
 - `chrome.storage.session` (not an in-memory variable) stores the transcript lines because the MV3 service worker is ephemeral and can be terminated mid-meeting.
 - The popup opens a long-lived `chrome.runtime.Port` (named `"popup"`) to receive push updates from the background rather than polling.
 - `background.js` uses `"type": "module"` in the manifest so it can import `utils/formatter.js` as an ES module.
-- Meeting info is scraped **fire-and-forget** so caption capture starts immediately without waiting for the panel animation.
+- Meeting info is scraped **after** the CC handling finishes and only while no Meet dialog is open (`scheduleMeetingInfoScrape`). Running it concurrently with the CC click made the two click sequences interfere.
+- `capturePhase` lives in the persisted state, not in the popup. The popup closes on the first click into the Meet page, so `isCapturing` alone cannot tell "waiting for captions" from "recording" on reopen.
+
+## Observer health check
+
+A `MutationObserver` is bound to one node. When Meet tears the caption region down and rebuilds it (CC toggled, presentation started, layout change, breakout room), the observed node is detached and **the callback never fires again** — re-acquiring the container inside the callback cannot help, because the callback is what stopped running. Capture then silently records nothing.
+
+`checkObserverHealth()` runs every 5s while capturing:
+
+1. `observedContainer.isConnected === false` → re-detect and re-attach, or fall back to `startScan()` and send `CC_STATUS: 'lost'`.
+2. Attached for > 60s with zero lines → re-run `detectStrategy()`; switch if it now yields a *different* container (catches Strategy E/F latching onto the wrong element).
+
+The popup shows a hint after 2 minutes of recording with 0 lines, and the toolbar badge turns amber in the same situation.
 
 ## Auto-enable CC (Closed Captions)
 

@@ -44,14 +44,15 @@ startet nicht zuverlässig. Das Review hat dafür drei sich überlagernde Ursach
 | 011 | [Details-Panel öffnet sich sichtbar / bleibt offen](TICKET-011-details-panel-bleibt-offen.md) | Bug/UX | **Hoch** | Klein | ◑ Close-Bug gefixt, Opt-out offen |
 | 012 | [Start-Sequenz serialisieren](TICKET-012-start-sequenz-serialisieren.md) | Bug | **Hoch** | Klein | ✅ v1.4.13 |
 | 016 | [DEBUG-Flag fehlt, Caption-Inhalte im Log](TICKET-016-debug-flag-fehlt.md) | Privacy/Perf | Mittel | Sehr klein | ✅ v1.4.13 |
-| 014 | [Observer stirbt still bei Re-Render](TICKET-014-observer-stirbt-still.md) | Bug | **Hoch** | Klein | ☐ offen |
-| 015 | [Warte-Phase überlebt Popup-Schließen nicht](TICKET-015-wartephase-nicht-persistent.md) | Bug/UX | Mittel | Klein | ☐ offen |
+| 014 | [Observer stirbt still bei Re-Render](TICKET-014-observer-stirbt-still.md) | Bug | **Hoch** | Klein | ✅ v1.4.14 |
+| 015 | [Warte-Phase überlebt Popup-Schließen nicht](TICKET-015-wartephase-nicht-persistent.md) | Bug/UX | Mittel | Klein | ✅ v1.4.14 |
 
 ## Nächste Schritte (Runde 2)
 
-1. **014** — verhindert stillen Datenverlust mitten im Meeting.
-2. **015** — macht den echten Zustand im Popup sichtbar; senkt Support-Aufwand.
-3. **011** (Rest) — Panel-Scraping optional machen bzw. ans Ende der Aufnahme verschieben.
+1. **011** (Rest) — Panel-Scraping optional machen bzw. ans Ende der Aufnahme verschieben.
+   Der Close-Bug ist behoben, das Panel blitzt beim Start aber weiterhin sichtbar auf.
+2. **Manuelle Verifikation im echten Meeting** — alle Fixes ab v1.4.13 sind bisher nur
+   syntaktisch geprüft. Testfälle siehe TICKET-017 und TICKET-014.
 
 ## Konventionen für die Bearbeitung
 

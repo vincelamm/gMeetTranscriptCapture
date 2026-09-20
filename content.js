@@ -654,6 +654,7 @@ function closePort() {
 
 function sendCaption(speaker, text, timestamp, replaceLastLine = false) {
   if (bgPort) {
+    linesCommitted++;
     bgPort.postMessage({ type: 'CAPTION_LINE', speaker, text, timestamp, replaceLastLine });
     // Enable unload guard on first actual caption data
     if (!hasUnsavedTranscript) enableUnloadGuard();
@@ -823,16 +824,91 @@ function startObserver(strategy, container) {
   });
 
   observer.observe(container, { childList: true, subtree: true, characterData: true });
-  LOG('Observer attached to container');
+  observedContainer = container;
+  attachedAt = Date.now();
+  INFO(`Observer attached via strategy "${strategy.name}"`);
+  startHealthCheck();
 }
 
 function stopObserver() {
   if (observer) { observer.disconnect(); observer = null; }
+  observedContainer = null;
+  stopHealthCheck();
   // Flush remaining buffers
   for (const [speaker, buf] of speakerBuffers) {
     clearTimeout(buf.timer);
     commitLine(speaker);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Observer health check
+//
+// A MutationObserver is bound to one specific node. When Meet tears the caption
+// region down and rebuilds it — CC toggled off/on, presentation started, layout
+// change, breakout room — the observed node is detached and the callback simply
+// never fires again. Re-acquiring the container *inside* the callback does not
+// help, because the callback is exactly what stopped running. The capture then
+// silently records nothing while the popup keeps saying "Aufnahme läuft".
+// ---------------------------------------------------------------------------
+let healthTimer = null;
+let observedContainer = null;
+let attachedAt = 0;
+let linesCommitted = 0;
+
+const HEALTH_INTERVAL_MS = 5000;
+// If a strategy attached but never produced a line within this window, it most
+// likely latched onto the wrong element — re-detect and try again.
+const SILENT_STRATEGY_MS = 60000;
+
+function startHealthCheck() {
+  stopHealthCheck();
+  healthTimer = setInterval(checkObserverHealth, HEALTH_INTERVAL_MS);
+}
+
+function stopHealthCheck() {
+  if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+}
+
+function checkObserverHealth() {
+  if (!isCapturing || !observer) return;
+
+  // 1. Observed node gone from the document → re-attach or fall back to polling.
+  if (!observedContainer?.isConnected) {
+    INFO('Caption container was removed from the DOM — re-detecting');
+    reattachOrScan();
+    return;
+  }
+
+  // 2. Attached but silent for too long → the strategy may have matched the
+  //    wrong element. Only act if another strategy would pick something else.
+  if (linesCommitted === 0 && Date.now() - attachedAt > SILENT_STRATEGY_MS) {
+    const match = detectStrategy();
+    if (match && match.container !== observedContainer) {
+      INFO(`No captions from strategy "${activeStrategy?.name}" — switching to "${match.strategy.name}"`);
+      activeStrategy = match.strategy;
+      startObserver(match.strategy, match.container);
+    } else {
+      // Nothing better available; stop re-checking every 5s but keep capturing.
+      attachedAt = Date.now();
+    }
+  }
+}
+
+function reattachOrScan() {
+  const match = detectStrategy();
+  if (match) {
+    activeStrategy = match.strategy;
+    startObserver(match.strategy, match.container);
+    return;
+  }
+  // Container is gone and nothing new found — go back to polling. startScan()
+  // re-attaches (and re-notifies the popup) as soon as captions reappear.
+  if (observer) { observer.disconnect(); observer = null; }
+  observedContainer = null;
+  stopHealthCheck();
+  chrome.runtime.sendMessage({ type: 'CC_STATUS', status: 'lost' }).catch(() => {});
+  startScan(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,6 +1252,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'START_CAPTURE') {
     isCapturing = true;
     localUserSent = false;
+    linesCommitted = 0;
     speakerBuffers.clear();
     lastCommitted.clear();
     utteranceTimes.clear();

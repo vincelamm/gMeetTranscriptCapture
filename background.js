@@ -25,6 +25,14 @@ import { formatTxt, formatMd, formatAIPrompt, buildFilename } from './utils/form
 function defaultState() {
   return {
     isCapturing: false,
+    // 'idle' | 'waiting_for_captions' | 'capturing'
+    // Kept in the persisted state, not just in the popup: the popup closes on
+    // the first click into the Meet page, and on reopen it must be able to tell
+    // "waiting for captions" from "actually recording". isCapturing alone is
+    // true in both cases.
+    capturePhase: 'idle',
+    ccWarning: false,   // captions not detected — popup shows manual instructions
+    ccAction: null,     // 'clicked' | 'already_on' | 'not_found' — drives the waiting text
     meetingTitle: '',
     meetingInfo: null,
     lines: [],
@@ -105,12 +113,20 @@ chrome.runtime.onConnect.addListener((port) => {
       appendCaptionLine(state, msg);
       scheduleFlush();
       broadcastToPopup({ type: 'LINE_ADDED', lineCount: state.lines.length });
+
+      // First line proves captions really arrive — leave the waiting phase even
+      // if the CC_STATUS 'found' message was lost (e.g. SW restart in between).
+      if (state.capturePhase !== 'capturing') {
+        await patchState({ capturePhase: 'capturing', ccWarning: false }, { immediate: true });
+      }
+      scheduleBadgeUpdate();
     });
     port.onDisconnect.addListener(async () => {
       // Content script disconnected — mark capture as stopped if still active
       const state = await ensureState();
       if (state.isCapturing) {
-        await patchState({ isCapturing: false }, { immediate: true });
+        await patchState({ isCapturing: false, capturePhase: 'idle', ccWarning: false }, { immediate: true });
+        await updateBadge();
         broadcastToPopup({ type: 'CAPTURE_STOPPED', reason: 'content_disconnected' });
       }
     });
@@ -168,6 +184,8 @@ async function handleMessage(msg, sender) {
 
       await patchState({
         isCapturing: true,
+        capturePhase: 'waiting_for_captions',
+        ccWarning: false,
         meetingTitle: title,
         meetingInfo: null,
         lines: [],
@@ -178,9 +196,15 @@ async function handleMessage(msg, sender) {
       // Forward to content script
       try {
         const response = await chrome.tabs.sendMessage(tab.id, { type: 'START_CAPTURE' });
+        await patchState({
+          capturePhase: response?.status === 'ok' ? 'capturing' : 'waiting_for_captions',
+          ccAction: response?.ccAction || null,
+        }, { immediate: true });
+        await updateBadge();
         return response;
       } catch {
-        await patchState({ isCapturing: false }, { immediate: true });
+        await patchState({ isCapturing: false, capturePhase: 'idle' }, { immediate: true });
+        await updateBadge();
         return { error: 'Could not reach the Meet tab. Please refresh the tab and try again.' };
       }
     }
@@ -189,7 +213,8 @@ async function handleMessage(msg, sender) {
       const state = await ensureState();
       if (!state.isCapturing) return { status: 'not_capturing' };
 
-      await patchState({ isCapturing: false }, { immediate: true });
+      await patchState({ isCapturing: false, capturePhase: 'idle', ccWarning: false }, { immediate: true });
+      await updateBadge();
 
       if (state.tabId) {
         try {
@@ -252,6 +277,9 @@ async function handleMessage(msg, sender) {
       const state = await ensureState();
       return {
         isCapturing: state.isCapturing,
+        capturePhase: state.capturePhase || 'idle',
+        ccWarning: !!state.ccWarning,
+        ccAction: state.ccAction || null,
         lineCount: state.lines.length,
         startTime: state.startTime,
         meetingTitle: state.meetingTitle,
@@ -261,9 +289,10 @@ async function handleMessage(msg, sender) {
     case 'CLEAR_TRANSCRIPT': {
       const state = await ensureState();
       await patchState(
-        { lines: [], startTime: null, meetingTitle: '', isCapturing: false },
+        { lines: [], startTime: null, meetingTitle: '', isCapturing: false, capturePhase: 'idle', ccWarning: false },
         { immediate: true }
       );
+      await updateBadge();
 
       // Notify content script that transcript was cleared (disables unload guard)
       if (state.tabId) {
@@ -276,14 +305,24 @@ async function handleMessage(msg, sender) {
     }
 
     case 'CC_STATUS': {
-      // Forward CC detection status from content script to popup
+      const state = await ensureState();
+      if (!state.isCapturing) return { status: 'not_capturing' };
+
+      // Persist the phase before broadcasting: a closed popup misses the
+      // broadcast entirely and has to recover the phase from GET_STATE.
+      if (msg.status === 'found') {
+        await patchState({ capturePhase: 'capturing', ccWarning: false }, { immediate: true });
+      } else if (msg.status === 'not_found') {
+        await patchState({ ccWarning: true }, { immediate: true });
+      } else if (msg.status === 'lost') {
+        // Caption container disappeared mid-capture — back to waiting.
+        await patchState({ capturePhase: 'waiting_for_captions' }, { immediate: true });
+      }
+      await updateBadge();
+
       broadcastToPopup({ type: 'CC_STATUS', status: msg.status });
       if (msg.status === 'found') {
-        // CC found — transition to capturing state
-        const state = await ensureState();
-        if (state.isCapturing) {
-          broadcastToPopup({ type: 'CC_FOUND', lineCount: state.lines.length });
-        }
+        broadcastToPopup({ type: 'CC_FOUND', lineCount: state.lines.length });
       }
       return { status: 'ok' };
     }
@@ -291,6 +330,45 @@ async function handleMessage(msg, sender) {
     default:
       return { error: `Unknown message type: ${msg.type}` };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar badge
+//
+// The popup closes as soon as the user clicks back into the Meet page, so it
+// cannot be the only place the capture state is visible. The badge answers
+// "is it running, and is it actually getting anything?" without opening it.
+// ---------------------------------------------------------------------------
+let badgeTimer = null;
+
+/** Coalesce badge writes on the caption hot path (captions arrive in bursts). */
+function scheduleBadgeUpdate() {
+  if (badgeTimer) return;
+  badgeTimer = setTimeout(() => { badgeTimer = null; updateBadge(); }, 1000);
+}
+
+// The badge does not survive a service-worker restart, but the session state
+// does — restore it whenever this module is evaluated.
+updateBadge();
+
+async function updateBadge() {
+  const state = await ensureState();
+  let text = '';
+  let color = '#1a73e8';
+
+  if (state.capturePhase === 'capturing') {
+    text = state.lines.length > 999 ? '999+' : String(state.lines.length);
+    // Recording but nothing captured yet — amber instead of blue.
+    color = state.lines.length === 0 ? '#f9ab00' : '#1a73e8';
+  } else if (state.capturePhase === 'waiting_for_captions') {
+    text = '…';
+    color = state.ccWarning ? '#d93025' : '#f9ab00';
+  }
+
+  try {
+    await chrome.action.setBadgeText({ text });
+    if (text) await chrome.action.setBadgeBackgroundColor({ color });
+  } catch { /* action API unavailable during SW teardown */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +399,8 @@ async function getMeetingTitle(tabId) {
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const state = await ensureState();
   if (state.isCapturing && state.tabId === tabId) {
-    await patchState({ isCapturing: false }, { immediate: true });
+    await patchState({ isCapturing: false, capturePhase: 'idle', ccWarning: false }, { immediate: true });
+    await updateBadge();
     broadcastToPopup({ type: 'CAPTURE_STOPPED', reason: 'tab_closed' });
   }
 });
@@ -330,7 +409,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
   const state = await ensureState();
   if (!state.isCapturing || state.tabId !== tabId) return;
   if (changeInfo.url && !changeInfo.url.startsWith('https://meet.google.com/')) {
-    await patchState({ isCapturing: false }, { immediate: true });
+    await patchState({ isCapturing: false, capturePhase: 'idle', ccWarning: false }, { immediate: true });
+    await updateBadge();
     broadcastToPopup({ type: 'CAPTURE_STOPPED', reason: 'tab_navigated' });
   }
 });
