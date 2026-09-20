@@ -9,7 +9,15 @@
  * caption element in DevTools Elements panel, and update STRATEGIES below.
  */
 
-const LOG = (...args) => console.log('[MeetTranscript]', ...args);
+// Set to true to get the full DOM/caption diagnostics in the console.
+// Leave false in released builds: LOG covers the MutationObserver hot path and
+// prints caption contents, which is meeting material.
+const DEBUG = false;
+
+/** Once-per-meeting lifecycle events — always on. */
+const INFO = (...args) => console.log('[MeetTranscript]', ...args);
+/** Verbose diagnostics — silenced unless DEBUG. */
+const LOG = (...args) => { if (DEBUG) console.log('[MeetTranscript]', ...args); };
 
 // ---------------------------------------------------------------------------
 // Selector strategies — tried in order until one works
@@ -151,6 +159,16 @@ function isSentenceFragment(str) {
 // ---------------------------------------------------------------------------
 // Caption container discovery helpers
 // ---------------------------------------------------------------------------
+/**
+ * Meet's Settings dialog contains live regions and language lists of its own.
+ * A caption container is never inside a dialog, so anything in one is rejected —
+ * otherwise an open settings dialog gets mistaken for the CC widget and capture
+ * reports success while recording nothing ("Capturing… 0 lines").
+ */
+function isInDialog(el) {
+  return !!el?.closest('[role="dialog"], [role="alertdialog"]');
+}
+
 function findAriaLiveContainer() {
   // Find the aria-live element most likely to be the CC widget.
   // Caption containers have child elements (speaker blocks) even when empty;
@@ -161,6 +179,7 @@ function findAriaLiveContainer() {
     // polite is standard; assertive has been observed in some Meet versions
     ...document.querySelectorAll('[aria-live="polite"], [aria-live="assertive"]'),
   ].filter(el => {
+    if (isInDialog(el)) return false;
     // Must have child elements — flat text nodes are status announcements
     if (el.children.length === 0) return false;
     const text = el.textContent.trim();
@@ -180,6 +199,10 @@ function detectStrategy() {
   for (const strategy of STRATEGIES) {
     const container = strategy.findContainer();
     if (!container) continue;
+    if (isInDialog(container)) {
+      LOG(`Strategy "${strategy.name}" — container sits inside a dialog, rejecting`);
+      continue;
+    }
 
     LOG(`Strategy "${strategy.name}" found container`);
     logContainerStructure(container);
@@ -244,7 +267,7 @@ function logDiagnostics() {
  * Strategies (tried in order, stops at first hit):
  *   1. data-self-name attribute on the local user's video tile
  *   2. aria-label on any element that includes "(you)" or a locale variant,
- *      e.g. "Vincent Lammers (you)" on the gallery tile or participant list item
+ *      e.g. "<Name> (you)" on the gallery tile or participant list item
  *   3. data-participant-id containers that include a data-self-name child
  */
 function detectLocalUser(info) {
@@ -266,7 +289,7 @@ function detectLocalUser(info) {
   }
 
   // 3. aria-label containing "(you)" / locale variants on ANY element —
-  //    e.g. "Vincent Lammers (you)" on gallery tiles or participant list items.
+  //    e.g. "<Name> (you)" on gallery tiles or participant list items.
   const YOU_PAREN = /\(\s*(you|vous|du|Sie|tú|tu|ty)\s*\)/i;
   for (const el of document.querySelectorAll('[aria-label]')) {
     const label = el.getAttribute('aria-label') || '';
@@ -328,9 +351,12 @@ async function scrapeMeetingInfoAsync() {
       LOG('Opening Meeting details panel automatically');
       infoBtn.click();
       panelWasOpened = true;
-      // Wait for the panel and its content to render
-      await sleep(450);
-      panel = findMeetingDetailsPanel();
+      // Poll instead of a fixed wait — on slow machines the panel needs well
+      // over 450 ms, and missing it used to leave the panel open for good.
+      for (let i = 0; i < 10 && !panel; i++) {
+        await sleep(150);
+        panel = findMeetingDetailsPanel();
+      }
     }
   }
 
@@ -344,15 +370,27 @@ async function scrapeMeetingInfoAsync() {
     extractParticipantsFromPeoplePanel(info);
   }
 
-  // Close the panel if we opened it (restore UI state)
-  if (panelWasOpened && panel) {
-    const closeBtn =
-      panel.querySelector('[aria-label*="Close" i], [aria-label*="Schließen" i], [aria-label*="Fermer" i]')
-      || findMeetingInfoButton(); // the info button acts as a toggle
+  // Close the panel if we opened it (restore UI state).
+  // Runs even when `panel` stayed null — otherwise a panel that rendered too
+  // slowly (or under an unsupported locale) would be left open permanently.
+  if (panelWasOpened) {
+    await sleep(100); // brief pause so the panel is visually acknowledged
+    const openPanel = panel || findMeetingDetailsPanel();
+    const closeBtn = openPanel?.querySelector(
+      '[aria-label*="Close" i], [aria-label*="Schließen" i], [aria-label*="Fermer" i], [aria-label*="Cerrar" i]'
+    );
     if (closeBtn) {
-      await sleep(100); // brief pause so the panel is visually acknowledged
       closeBtn.click();
-      LOG('Meeting details panel closed');
+      LOG('Meeting details panel closed via close button');
+    } else {
+      // No close button found — press Escape rather than re-clicking the info
+      // button, which is a toggle and would re-open an already-closed panel.
+      document.body.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true,
+      }));
+      await sleep(200);
+      if (findMeetingDetailsPanel()) findMeetingInfoButton()?.click(); // still open → toggle
+      LOG('Meeting details panel closed via Escape');
     }
   }
 
@@ -366,6 +404,25 @@ async function scrapeMeetingInfoAsync() {
 
 /** Tiny helper — avoids importing a library just for delays. */
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Run the meeting-info scrape after `delayMs`, but never while one of Meet's
+ * dialogs is open — the scrape opens the details panel, and a click landing on
+ * a modal overlay either does nothing or dismisses the wrong thing.
+ */
+function scheduleMeetingInfoScrape(delayMs) {
+  setTimeout(async () => {
+    if (!isCapturing) return;
+    for (let i = 0; i < 10 && document.querySelector('[role="dialog"], [role="alertdialog"]'); i++) {
+      await sleep(1000);
+    }
+    if (!isCapturing) return;
+    const meetingInfo = await scrapeMeetingInfoAsync();
+    if (meetingInfo) {
+      chrome.runtime.sendMessage({ type: 'MEETING_INFO', info: meetingInfo }).catch(() => {});
+    }
+  }, delayMs);
+}
 
 /**
  * Find the ℹ button in Meet's header that opens the Meeting details panel.
@@ -585,7 +642,7 @@ function openPort() {
   } catch (err) {
     // Extension context invalidated (tab open across extension reload) — bail out.
     // The popup's "Reload Meet tab" view will guide the user.
-    LOG('openPort failed:', err.message);
+    INFO('openPort failed:', err.message);
     bgPort = null;
   }
 }
@@ -614,17 +671,12 @@ let localUserSent = false; // prevent redundant MEETING_INFO updates
 
 /// Map<speakerKey, { pendingText: string, timer: TimeoutID }>
 const speakerBuffers = new Map();
-// Track last committed text per speaker (for deduplication)
+// Full committed text of each speaker's CURRENT active utterance (the line
+// currently shown in the transcript). Used both for deduplication and as the
+// base for overlap-merging Meet's rolling caption window.
 const lastCommitted = new Map();
-// First UTTERANCE_OVERLAP_CHARS of the current line per speaker —
-// used to detect same-utterance revisions vs genuinely new speech
-const utteranceStarts = new Map();
 // Timestamp of each speaker's last commit (to expire stale utterance context)
 const utteranceTimes = new Map();
-// Char offset into the full DOM text where the current line started.
-// Meet accumulates all speech in one growing element; this lets us strip
-// already-committed text when a new line boundary is detected.
-const lineStartLen = new Map();
 
 /**
  * Lazy localUser detection: called the first time "You" appears as a caption
@@ -645,8 +697,9 @@ function tryDetectAndSendLocalUser() {
 }
 
 const DEBOUNCE_MS = 800;
-// How many leading characters must match to consider it the same utterance
-const UTTERANCE_OVERLAP_CHARS = 25;
+// Minimum suffix/prefix overlap (chars) to treat a new caption window as a
+// continuation of the current utterance rather than a brand-new one.
+const MIN_OVERLAP_CHARS = 12;
 // After this much silence, always start a new line even if text looks similar
 const UTTERANCE_EXPIRY_MS = 12000;
 
@@ -677,57 +730,73 @@ function processCaptionUpdate(currentSpeakers) {
   }
 }
 
+/**
+ * Largest k (≤ cap) such that the last k chars of `a` equal the first k chars
+ * of `b`. Used to stitch Google Meet's rolling caption window: when the top of
+ * the window scrolls off, the new window text overlaps the tail of what we
+ * already committed, and we append only the non-overlapping remainder.
+ */
+function overlapLength(a, b) {
+  const max = Math.min(a.length, b.length, 400);
+  for (let k = max; k > 0; k--) {
+    if (a.slice(a.length - k) === b.slice(0, k)) return k;
+  }
+  return 0;
+}
+
 function commitLine(speaker) {
   const buf = speakerBuffers.get(speaker);
   if (!buf) return;
 
-  const text = buf.pendingText;
+  const windowText = buf.pendingText.trim();
   speakerBuffers.delete(speaker);
-
-  // Skip if identical to last committed
-  if (lastCommitted.get(speaker) === text) return;
+  if (!windowText) return;
 
   const now = Date.now();
-  const prevStart = utteranceStarts.get(speaker) || '';
+  const prev = lastCommitted.get(speaker) || '';
   const lastCommitTime = utteranceTimes.get(speaker) || 0;
   const expired = (now - lastCommitTime) > UTTERANCE_EXPIRY_MS;
 
-  // Same utterance = leading characters overlap AND last commit was recent.
-  // Google Meet revises earlier words as speech continues, so the beginning
-  // of the sentence stays the same even when the end changes — we use that
-  // as the signal instead of checking startsWith.
-  const overlapLen = Math.min(UTTERANCE_OVERLAP_CHARS, prevStart.length, text.length);
-  const leadingMatch = overlapLen > 5 && prevStart.slice(0, overlapLen) === text.slice(0, overlapLen);
-  const isSameUtterance = leadingMatch && !expired;
+  // Determine how the new caption-window text relates to the text already
+  // committed for this speaker's active utterance, and merge accordingly.
+  // Google Meet shows a rolling ~2–3 line window: as someone keeps talking the
+  // start scrolls out of view, so window text neither strictly grows nor stays
+  // prefix-stable. We reconstruct the full utterance via suffix/prefix overlap.
+  let merged;
+  let isSameUtterance;
 
-  if (!isSameUtterance) {
-    // New utterance — record start and advance line offset past already-committed text
-    utteranceStarts.set(speaker, text.slice(0, UTTERANCE_OVERLAP_CHARS));
-    const prevFull = lastCommitted.get(speaker) || '';
-    lineStartLen.set(speaker, prevFull.length);
+  if (!prev || expired) {
+    // Nothing to continue (or too much silence) — start a fresh line.
+    merged = windowText;
+    isSameUtterance = false;
+  } else if (windowText === prev) {
+    return; // unchanged
+  } else if (windowText.startsWith(prev)) {
+    // Window grew while the start is still visible — same utterance, longer.
+    merged = windowText;
+    isSameUtterance = true;
+  } else if (prev.startsWith(windowText) || prev.includes(windowText)) {
+    // New window is a shorter prefix / already-contained revision — keep prev.
+    return;
+  } else {
+    const k = overlapLength(prev, windowText);
+    if (k >= MIN_OVERLAP_CHARS) {
+      // Rolling window scrolled: stitch the non-overlapping tail onto prev.
+      merged = prev + windowText.slice(k);
+      isSameUtterance = true;
+    } else {
+      // No meaningful overlap → a genuinely new utterance.
+      merged = windowText;
+      isSameUtterance = false;
+    }
   }
 
-  // Capture previous committed text BEFORE overwriting it — needed for the
-  // accumulation check below.
-  const prevCommitted = lastCommitted.get(speaker) || '';
+  if (isSameUtterance && merged === prev) return;
 
-  lastCommitted.set(speaker, text);
+  lastCommitted.set(speaker, merged);
   utteranceTimes.set(speaker, now);
 
-  // Strip text already committed in previous lines (handles Meet accumulating
-  // the entire session in one growing DOM element).
-  // Guard: only slice if the current DOM text genuinely *starts with* the
-  // previously committed prefix. Without this check, a fresh DOM element whose
-  // text happens to be longer than startLen would have its opening characters
-  // silently dropped.
-  const startLen = lineStartLen.get(speaker) || 0;
-  const prefixToMatch = prevCommitted.slice(0, Math.min(startLen, 40));
-  const seemsAccumulated =
-    startLen > 0 &&
-    text.length > startLen &&
-    (prefixToMatch.length === 0 || text.startsWith(prefixToMatch));
-  const textToSend = seemsAccumulated ? text.slice(startLen).trim() : text.trim();
-
+  const textToSend = merged.trim();
   if (!textToSend) return;
 
   // When "You" appears as a speaker the local user's video tile is in the DOM —
@@ -771,26 +840,150 @@ function stopObserver() {
 // ---------------------------------------------------------------------------
 
 /**
- * Attempts to find and click the CC button in Google Meet.
- * Returns true if the button was found and clicked.
+ * Attempts to find and click the CC toggle in Google Meet.
+ * Returns 'already_on' | 'clicked' | 'not_found'.
  */
 function tryEnableCC() {
   const ccButton = findCCButton();
-  if (ccButton) {
-    // Check if CC is already ON — Meet toggles aria-pressed or adds an "on" visual state
-    const isAlreadyOn = ccButton.getAttribute('aria-pressed') === 'true';
-    if (isAlreadyOn) {
-      LOG('CC button found — captions already enabled');
-      return 'already_on';
-    }
-    ccButton.click();
-    LOG('CC button found and clicked — captions enabled');
-    return 'clicked';
+  if (!ccButton) {
+    LOG('CC button not found in DOM — user must enable manually');
+    logCCDiagnostics();
+    return 'not_found';
   }
 
-  LOG('CC button not found in DOM — user must enable manually');
-  logCCDiagnostics();
-  return 'not_found';
+  if (isCCButtonOn(ccButton)) {
+    // Clicking now would turn captions OFF. Happens regularly: CC is already
+    // enabled but nobody has spoken yet, so no caption container exists in the
+    // DOM and detectStrategy() found nothing.
+    LOG('CC button found — captions already enabled, not clicking');
+    return 'already_on';
+  }
+
+  ccButton.click();
+  LOG('CC button found and clicked');
+  // Meet may respond by opening Settings → Captions instead of switching
+  // captions on directly (users without a saved caption language). Handle that
+  // panel; fire-and-forget, the capture polling picks up from there.
+  handleCaptionSettingsDialog();
+  return 'clicked';
+}
+
+/**
+ * Is the CC toggle currently ON?
+ *
+ * `aria-pressed` is the reliable signal when Meet sets it, but several Meet
+ * versions omit it. Fall back to the label verb: Meet labels the button with
+ * the action it *performs*, i.e. "Turn off captions" / "Untertitel deaktivieren"
+ * while captions are on.
+ */
+function isCCButtonOn(btn) {
+  const pressed = btn.getAttribute('aria-pressed');
+  if (pressed === 'true') return true;
+  if (pressed === 'false') return false;
+
+  const label = (btn.getAttribute('aria-label') || '') + ' ' + (btn.getAttribute('data-tooltip') || '');
+  const TURN_OFF = /turn off|disable|hide|deaktivier|ausschalten|ausblenden|désactiver|masquer|desactivar|ocultar|disattiva|nascondi/i;
+  return TURN_OFF.test(label);
+}
+
+/**
+ * Meet's Settings dialog, Captions tab — shown when captions are switched on
+ * without a stored preference (and the dialog our own CC-button search used to
+ * open by mistake in ≤ v1.4.12).
+ *
+ * The dialog has NO confirm button: Meet applies changes immediately and the
+ * user closes it with the ✕. So we only ever do two things here:
+ *   1. select the "automatic captions" radio if captions are set to off
+ *   2. close the dialog
+ *
+ * Deliberately never clicks an unidentified button — a blind "last button"
+ * guess can hit "Reset" (wiping the user's caption preferences) or, in a
+ * misidentified dialog, something far worse.
+ */
+async function handleCaptionSettingsDialog() {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await sleep(300);
+    const dialog = findCaptionSettingsDialog();
+    if (!dialog) continue;
+
+    INFO('Caption settings dialog detected — configuring and closing');
+    selectAutomaticCaptions(dialog);
+    await sleep(300); // let Meet apply the radio change before the dialog goes away
+    closeDialog(dialog);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Find Meet's caption settings dialog.
+ *
+ * Requires BOTH a caption term and an actual radio group — a settings dialog on
+ * a different tab, a feedback form or a "leave meeting" confirmation must never
+ * match, because we click inside whatever we return here.
+ */
+function findCaptionSettingsDialog() {
+  const CAPTION_TERM = /caption|subtitle|untertitel|sous-titre|sottotitoli|subtítulo|legenda|ondertiteling/i;
+  const DESTRUCTIVE = /leave|verlassen|end (the )?(call|meeting)|beenden|remove|entfernen|report|melden/i;
+
+  for (const d of document.querySelectorAll('[role="dialog"], [role="alertdialog"]')) {
+    const text = (d.getAttribute('aria-label') || '') + ' ' + (d.textContent || '').slice(0, 600);
+    if (!CAPTION_TERM.test(text)) continue;
+    if (DESTRUCTIVE.test(text)) continue;
+    if (!d.querySelector('[role="radio"], input[type="radio"]')) continue;
+    return d;
+  }
+  return null;
+}
+
+const CAPTIONS_AUTO_RE = /^(automatic captions?|automatische untertitel|sous-titres automatiques|subtítulos automáticos|legendas automáticas|sottotitoli automatici|automatische ondertiteling)/i;
+
+/** Switch the caption radio group to "automatic captions" if it is set to off. */
+function selectAutomaticCaptions(dialog) {
+  const radios = [...dialog.querySelectorAll('[role="radio"], input[type="radio"]')];
+  const autoRadio = radios.find((r) => {
+    const label = (r.getAttribute('aria-label') || '') || radioLabelText(r);
+    return CAPTIONS_AUTO_RE.test(label.trim());
+  });
+
+  if (!autoRadio) {
+    LOG('Caption settings dialog: no "automatic captions" radio found');
+    return;
+  }
+  const checked = autoRadio.getAttribute('aria-checked') === 'true' || autoRadio.checked === true;
+  if (checked) {
+    LOG('Caption settings dialog: automatic captions already selected');
+    return;
+  }
+  autoRadio.click();
+  INFO('Caption settings dialog: selected automatic captions');
+}
+
+/** Text of the label row a custom radio belongs to. */
+function radioLabelText(radio) {
+  const row = radio.closest('label, [role="radiogroup"] > *, li') || radio.parentElement;
+  return row ? row.textContent.trim() : '';
+}
+
+/** Close a dialog via its close button, falling back to Escape. */
+function closeDialog(dialog) {
+  const CLOSE = /close|schließen|schliessen|fermer|cerrar|chiudi|sluiten/i;
+  const closeBtn = [...dialog.querySelectorAll('button, [role="button"]')].find((b) => {
+    const label = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-tooltip') || '');
+    return CLOSE.test(label);
+  });
+
+  if (closeBtn) {
+    closeBtn.click();
+    LOG('Dialog closed via close button');
+    return;
+  }
+  for (const target of [dialog, document.activeElement, document.body]) {
+    target?.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true,
+    }));
+  }
+  LOG('Dialog closed via Escape');
 }
 
 /**
@@ -822,24 +1015,28 @@ function findCCButton() {
   // Selectors covering native buttons AND Meet's custom role="button" elements
   const clickableSelector = 'button, [role="button"]';
 
-  // Pass 1: check aria-label and data-tooltip for known keywords
-  for (const el of document.querySelectorAll(clickableSelector)) {
-    const ariaLabel = el.getAttribute('aria-label') || '';
-    const tooltip = el.getAttribute('data-tooltip') || '';
-    if (keywordPattern.test(ariaLabel) || keywordPattern.test(tooltip)) {
-      LOG('findCCButton: matched via keyword in aria-label/tooltip:', ariaLabel || tooltip);
+  // Every pass below is filtered through isCaptionToggle(): a settings/options
+  // control also carries a caption keyword, and clicking it opens Meet's
+  // Settings → Captions dialog instead of switching captions on. That was the
+  // root cause of the "a window opens on start" reports up to v1.4.12.
+  const candidates = [...document.querySelectorAll(clickableSelector)].filter(isCaptionToggle);
+
+  // Pass 1: language-independent — Meet includes the keyboard shortcut "(c)"
+  // in the CC *toggle* label across virtually all locales. Settings entries
+  // have no shortcut, so this is the strongest signal.
+  for (const el of candidates) {
+    const combined = labelOf(el);
+    if (/\(c\)/i.test(combined)) {
+      LOG('findCCButton: matched via shortcut hint "(c)":', combined.trim());
       return el;
     }
   }
 
-  // Pass 2: language-independent — Meet includes the keyboard shortcut "(c)"
-  // in the CC button label across virtually all locales
-  for (const el of document.querySelectorAll(clickableSelector)) {
-    const ariaLabel = el.getAttribute('aria-label') || '';
-    const tooltip = el.getAttribute('data-tooltip') || '';
-    const combined = ariaLabel + ' ' + tooltip;
-    if (/\(c\)/.test(combined)) {
-      LOG('findCCButton: matched via shortcut hint "(c)":', combined.trim());
+  // Pass 2: caption keyword in aria-label / data-tooltip.
+  for (const el of candidates) {
+    const combined = labelOf(el);
+    if (keywordPattern.test(combined)) {
+      LOG('findCCButton: matched via keyword in aria-label/tooltip:', combined.trim());
       return el;
     }
   }
@@ -848,9 +1045,10 @@ function findCCButton() {
   const CC_JSNAMES = ['r8qRAd', 'Dg9Wp'];
   for (const jsname of CC_JSNAMES) {
     const el = document.querySelector(`[jsname="${jsname}"]`);
-    if (el) {
+    const btn = el?.closest(clickableSelector) || el;
+    if (btn && isCaptionToggle(btn)) {
       LOG('findCCButton: matched via jsname:', jsname);
-      return el.closest(clickableSelector) || el;
+      return btn;
     }
   }
 
@@ -858,10 +1056,9 @@ function findCCButton() {
   const toolbars = document.querySelectorAll('[role="toolbar"], [jsname="EaZ7Cc"]');
   for (const toolbar of toolbars) {
     for (const el of toolbar.querySelectorAll(clickableSelector)) {
-      const text = (el.getAttribute('aria-label') || '') + ' ' +
-                   (el.getAttribute('data-tooltip') || '') + ' ' +
-                   el.textContent;
-      if (keywordPattern.test(text) || /\(c\)/.test(text)) {
+      if (!isCaptionToggle(el)) continue;
+      const text = labelOf(el) + ' ' + el.textContent;
+      if (keywordPattern.test(text) || /\(c\)/i.test(text)) {
         LOG('findCCButton: matched via toolbar scan:', text.trim().slice(0, 60));
         return el;
       }
@@ -869,6 +1066,31 @@ function findCCButton() {
   }
 
   return null;
+}
+
+/** aria-label + data-tooltip of an element, as one string. */
+function labelOf(el) {
+  return (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('data-tooltip') || '');
+}
+
+/**
+ * Labels that mark a settings / language / overflow control rather than the
+ * captions on-off toggle. Clicking one of these opens a dialog instead of
+ * enabling captions, so they are excluded from every search pass.
+ */
+const CC_SETTINGS_PATTERN =
+  /settings|einstellung|preferences|optionen|options?\b|language|sprache|langue|idioma|lingua|impostazioni|configuraci|configura|instellingen|more\b|weitere|mehr\b/i;
+
+/**
+ * True unless the element is recognisably a settings/options entry or sits in a
+ * dialog. An unlabelled element passes — the keyword passes reject it anyway,
+ * and the jsname pass must keep working on buttons without an aria-label.
+ */
+function isCaptionToggle(el) {
+  if (CC_SETTINGS_PATTERN.test(labelOf(el))) return false;
+  // Never click inside an open dialog — the toggle lives in the meeting toolbar.
+  if (isInDialog(el)) return false;
+  return true;
 }
 
 function logCCDiagnostics() {
@@ -889,9 +1111,18 @@ function logCCDiagnostics() {
 // ---------------------------------------------------------------------------
 let ccAttempts = 0;
 
-function startScan() {
+/**
+ * Poll for the caption container.
+ *
+ * `ccKnownOn` means the CC toggle reported itself as already enabled. Meet only
+ * renders the caption container once somebody has spoken, so an empty DOM is
+ * expected during silence — warning after 6 s would be wrong. Wait ~40 s before
+ * suggesting manual steps in that case.
+ */
+function startScan(ccKnownOn = false) {
   stopScan();
   ccAttempts = 0;
+  const warnAfter = ccKnownOn ? 20 : 3;
   LOG('Polling for caption container every 2s…');
   scanInterval = setInterval(() => {
     const match = detectStrategy();
@@ -902,8 +1133,7 @@ function startScan() {
       chrome.runtime.sendMessage({ type: 'CC_STATUS', status: 'found' }).catch(() => {});
     } else {
       ccAttempts++;
-      // After 3 polls (~6s) without finding captions, warn the user
-      if (ccAttempts === 3) {
+      if (ccAttempts === warnAfter) {
         chrome.runtime.sendMessage({ type: 'CC_STATUS', status: 'not_found' }).catch(() => {});
       }
     }
@@ -948,21 +1178,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     localUserSent = false;
     speakerBuffers.clear();
     lastCommitted.clear();
-    utteranceStarts.clear();
     utteranceTimes.clear();
-    lineStartLen.clear();
     activeStrategy = null;
     openPort();
 
-    LOG('Start capture requested');
-
-    // Open the Meeting details panel automatically, scrape, then close it.
-    // Fire-and-forget: caption capture starts immediately, info arrives ~500ms later.
-    scrapeMeetingInfoAsync().then(meetingInfo => {
-      if (meetingInfo) {
-        chrome.runtime.sendMessage({ type: 'MEETING_INFO', info: meetingInfo }).catch(() => {});
-      }
-    });
+    INFO('Start capture requested');
 
     const match = detectStrategy();
 
@@ -970,12 +1190,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       activeStrategy = match.strategy;
       startObserver(match.strategy, match.container);
       sendResponse({ status: 'ok' });
+      scheduleMeetingInfoScrape(0);
     } else {
-      // Captions not found — try to auto-enable CC
+      // No caption container yet. Note this does NOT prove captions are off —
+      // Meet only renders the container once someone has spoken. tryEnableCC()
+      // therefore checks the toggle's own state before clicking anything.
       const ccResult = tryEnableCC();
-      LOG('Auto-enable CC result:', ccResult);
-      startScan();
+      INFO('Auto-enable CC result:', ccResult);
+      startScan(ccResult === 'already_on');
       sendResponse({ status: 'waiting_for_captions', ccAction: ccResult });
+      // Delay the meeting-info scrape: it opens and closes Meet's details
+      // panel, which must not overlap with the CC click and any dialog Meet
+      // shows in response.
+      scheduleMeetingInfoScrape(ccResult === 'clicked' ? 5000 : 1000);
     }
   }
 
@@ -985,7 +1212,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     stopScan();
     closePort();
     // Keep unload guard active — transcript still needs to be downloaded
-    LOG('Capture stopped');
+    INFO('Capture stopped');
     sendResponse({ status: 'ok' });
   }
 

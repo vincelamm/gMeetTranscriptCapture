@@ -4,23 +4,24 @@
  * Manages capture state in chrome.storage.session (survives service worker
  * sleep/wake cycles within a browser session). Receives caption lines from
  * content.js and handles download requests from popup.js.
+ *
+ * State handling (see TICKET-001 / TICKET-007):
+ *   - The authoritative copy of the state lives in an in-memory `cache` object
+ *     while the service worker is alive. All mutations happen synchronously on
+ *     that object, which removes the read-modify-write race that a
+ *     getState()/setState() round-trip over `await` would otherwise have.
+ *   - The cache is lazily (re)loaded from chrome.storage.session whenever the
+ *     service worker (re)starts.
+ *   - Writes to storage are batched: high-frequency caption appends only
+ *     schedule a debounced flush, while correctness-critical operations
+ *     (start/stop/download/clear/…) flush immediately.
  */
 
 import { formatTxt, formatMd, formatAIPrompt, buildFilename } from './utils/formatter.js';
 
 // ---------------------------------------------------------------------------
-// Storage helpers
+// State: in-memory cache + batched persistence
 // ---------------------------------------------------------------------------
-async function getState() {
-  const result = await chrome.storage.session.get('captureState');
-  return result.captureState || defaultState();
-}
-
-async function setState(patch) {
-  const current = await getState();
-  await chrome.storage.session.set({ captureState: { ...current, ...patch } });
-}
-
 function defaultState() {
   return {
     isCapturing: false,
@@ -30,6 +31,53 @@ function defaultState() {
     startTime: null,
     tabId: null,
   };
+}
+
+let cache = null;          // authoritative state while the SW is alive
+let loadingPromise = null; // de-dupes concurrent initial loads
+let flushTimer = null;
+const FLUSH_DEBOUNCE_MS = 2000;
+
+/**
+ * Return the live state object, lazily loading it from storage the first time
+ * (or after a service-worker restart). Concurrent callers share one load, so
+ * they all receive the same object — after which synchronous mutations on it
+ * are atomic with respect to one another.
+ */
+async function ensureState() {
+  if (cache) return cache;
+  if (!loadingPromise) {
+    loadingPromise = chrome.storage.session.get('captureState').then((result) => {
+      cache = result.captureState || defaultState();
+      loadingPromise = null;
+      return cache;
+    });
+  }
+  return loadingPromise;
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => { flushTimer = null; flushNow(); }, FLUSH_DEBOUNCE_MS);
+}
+
+/** Persist the current cache to storage immediately (cancels any pending flush). */
+async function flushNow() {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  if (!cache) return;
+  await chrome.storage.session.set({ captureState: cache });
+}
+
+/**
+ * Merge a patch into the live state. High-frequency callers pass immediate:false
+ * (default) to batch the write; correctness-critical callers pass immediate:true.
+ */
+async function patchState(patch, { immediate = false } = {}) {
+  const state = await ensureState();
+  Object.assign(state, patch);
+  if (immediate) await flushNow();
+  else scheduleFlush();
+  return state;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,35 +97,45 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'content-script') {
     port.onMessage.addListener(async (msg) => {
       if (msg.type !== 'CAPTION_LINE') return;
-      const state = await getState();
+      const state = await ensureState();
       if (!state.isCapturing) return;
 
-      let lines = [...state.lines];
-      if (msg.replaceLastLine && lines.length > 0) {
-        // Find the last line from this speaker and update it in place
-        const lastIdx = [...lines].map(l => l.speaker).lastIndexOf(msg.speaker);
-        if (lastIdx !== -1) {
-          lines[lastIdx] = { speaker: msg.speaker, text: msg.text, timestamp: lines[lastIdx].timestamp };
-        } else {
-          lines.push({ speaker: msg.speaker, text: msg.text, timestamp: msg.timestamp });
-        }
-      } else {
-        lines.push({ speaker: msg.speaker, text: msg.text, timestamp: msg.timestamp });
-      }
-
-      await setState({ lines });
-      broadcastToPopup({ type: 'LINE_ADDED', lineCount: lines.length });
+      // Mutate the in-memory state synchronously — no await between read and
+      // write, so concurrent CAPTION_LINE messages cannot clobber each other.
+      appendCaptionLine(state, msg);
+      scheduleFlush();
+      broadcastToPopup({ type: 'LINE_ADDED', lineCount: state.lines.length });
     });
     port.onDisconnect.addListener(async () => {
       // Content script disconnected — mark capture as stopped if still active
-      const state = await getState();
+      const state = await ensureState();
       if (state.isCapturing) {
-        await setState({ isCapturing: false });
+        await patchState({ isCapturing: false }, { immediate: true });
         broadcastToPopup({ type: 'CAPTURE_STOPPED', reason: 'content_disconnected' });
       }
     });
   }
 });
+
+/**
+ * Append a caption line to the state, or update the speaker's most recent line
+ * in place when the content script flagged this as a same-utterance revision.
+ * Mutates `state.lines` directly (the cache is the single source of truth).
+ */
+function appendCaptionLine(state, msg) {
+  if (msg.replaceLastLine && state.lines.length > 0) {
+    const lastIdx = state.lines.map((l) => l.speaker).lastIndexOf(msg.speaker);
+    if (lastIdx !== -1) {
+      state.lines[lastIdx] = {
+        speaker: msg.speaker,
+        text: msg.text,
+        timestamp: state.lines[lastIdx].timestamp,
+      };
+      return;
+    }
+  }
+  state.lines.push({ speaker: msg.speaker, text: msg.text, timestamp: msg.timestamp });
+}
 
 function broadcastToPopup(msg) {
   for (const port of popupPorts) {
@@ -108,30 +166,30 @@ async function handleMessage(msg, sender) {
 
       const title = await getMeetingTitle(tab.id);
 
-      await setState({
+      await patchState({
         isCapturing: true,
         meetingTitle: title,
         meetingInfo: null,
         lines: [],
         startTime: Date.now(),
         tabId: tab.id,
-      });
+      }, { immediate: true });
 
       // Forward to content script
       try {
         const response = await chrome.tabs.sendMessage(tab.id, { type: 'START_CAPTURE' });
         return response;
       } catch {
-        await setState({ isCapturing: false });
+        await patchState({ isCapturing: false }, { immediate: true });
         return { error: 'Could not reach the Meet tab. Please refresh the tab and try again.' };
       }
     }
 
     case 'STOP_CAPTURE': {
-      const state = await getState();
+      const state = await ensureState();
       if (!state.isCapturing) return { status: 'not_capturing' };
 
-      await setState({ isCapturing: false });
+      await patchState({ isCapturing: false }, { immediate: true });
 
       if (state.tabId) {
         try {
@@ -143,38 +201,28 @@ async function handleMessage(msg, sender) {
       return { status: 'ok', lineCount: state.lines.length };
     }
 
-    case 'CAPTION_LINE': {
-      const state = await getState();
-      if (!state.isCapturing) return { status: 'ignored' };
-
-      const line = {
-        speaker: msg.speaker,
-        text: msg.text,
-        timestamp: msg.timestamp,
-      };
-
-      const lines = [...state.lines, line];
-      await setState({ lines });
-      broadcastToPopup({ type: 'LINE_ADDED', lineCount: lines.length });
-      return { status: 'ok' };
-    }
-
     case 'MEETING_INFO': {
-      const cur = await getState();
-      await setState({ meetingInfo: { ...(cur.meetingInfo || {}), ...msg.info } });
+      const state = await ensureState();
+      await patchState(
+        { meetingInfo: { ...(state.meetingInfo || {}), ...msg.info } },
+        { immediate: true }
+      );
       return { status: 'ok' };
     }
 
     case 'GET_TRANSCRIPT_CONTENT': {
-      const state = await getState();
+      const state = await ensureState();
       if (state.lines.length === 0) return { error: 'No lines captured yet.' };
       const content = formatAIPrompt(state.lines, state.meetingTitle, state.startTime, state.meetingInfo);
       return { status: 'ok', content };
     }
 
     case 'DOWNLOAD_TRANSCRIPT': {
-      const state = await getState();
+      const state = await ensureState();
       if (state.lines.length === 0) return { error: 'No lines captured yet.' };
+
+      // Persist the latest state before handing a copy to the download.
+      await flushNow();
 
       const format = msg.format || 'txt';
       const content =
@@ -201,7 +249,7 @@ async function handleMessage(msg, sender) {
     }
 
     case 'GET_STATE': {
-      const state = await getState();
+      const state = await ensureState();
       return {
         isCapturing: state.isCapturing,
         lineCount: state.lines.length,
@@ -211,8 +259,11 @@ async function handleMessage(msg, sender) {
     }
 
     case 'CLEAR_TRANSCRIPT': {
-      const state = await getState();
-      await setState({ lines: [], startTime: null, meetingTitle: '', isCapturing: false });
+      const state = await ensureState();
+      await patchState(
+        { lines: [], startTime: null, meetingTitle: '', isCapturing: false },
+        { immediate: true }
+      );
 
       // Notify content script that transcript was cleared (disables unload guard)
       if (state.tabId) {
@@ -229,7 +280,7 @@ async function handleMessage(msg, sender) {
       broadcastToPopup({ type: 'CC_STATUS', status: msg.status });
       if (msg.status === 'found') {
         // CC found — transition to capturing state
-        const state = await getState();
+        const state = await ensureState();
         if (state.isCapturing) {
           broadcastToPopup({ type: 'CC_FOUND', lineCount: state.lines.length });
         }
@@ -268,18 +319,18 @@ async function getMeetingTitle(tabId) {
 // Auto-stop when the user leaves the Meet tab
 // ---------------------------------------------------------------------------
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  const state = await getState();
+  const state = await ensureState();
   if (state.isCapturing && state.tabId === tabId) {
-    await setState({ isCapturing: false });
+    await patchState({ isCapturing: false }, { immediate: true });
     broadcastToPopup({ type: 'CAPTURE_STOPPED', reason: 'tab_closed' });
   }
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
-  const state = await getState();
+  const state = await ensureState();
   if (!state.isCapturing || state.tabId !== tabId) return;
   if (changeInfo.url && !changeInfo.url.startsWith('https://meet.google.com/')) {
-    await setState({ isCapturing: false });
+    await patchState({ isCapturing: false }, { immediate: true });
     broadcastToPopup({ type: 'CAPTURE_STOPPED', reason: 'tab_navigated' });
   }
 });

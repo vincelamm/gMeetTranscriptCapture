@@ -80,7 +80,13 @@ When the user clicks "Start Capture" and captions are not yet visible, `content.
 3. **`jsname` match** — known `jsname` values for the CC button (`r8qRAd`, `Dg9Wp`)
 4. **Toolbar scan** — searches inside `[role="toolbar"]` containers with the same keyword/shortcut matching
 
-If auto-enable fails, the extension polls every 2s and retries once after ~4s (the toolbar may load late). After ~6s the popup shows a warning with manual instructions.
+**Every pass is filtered through `isCaptionToggle()`**, which rejects elements whose label looks like a settings/options/language control and anything inside a `[role="dialog"]`. Without that filter the *caption settings* entry wins the keyword pass in localized UIs (it also contains "Untertitel"/"captions"), and clicking it opens Meet's **Settings → Captions** dialog instead of enabling captions. That was the cause of the "a window pops up when I start capture" reports up to v1.4.12.
+
+**Before clicking, `isCCButtonOn()` checks whether captions are already on** (`aria-pressed`, else a "turn off / deaktivieren" verb in the label). This matters because a missing caption container does *not* mean captions are off — Meet only renders the container once someone has spoken. Clicking blindly would switch captions **off** for users who enabled CC themselves before starting the capture.
+
+If Meet responds to the click by opening Settings → Captions (users without a stored caption language), `handleCaptionSettingsDialog()` selects the "automatic captions" radio and closes the dialog. That dialog has **no confirm button** — Meet applies changes immediately. Never click an unidentified button in it: the only text button is "Reset", which would wipe the user's caption preferences.
+
+If auto-enable fails, the extension polls every 2s. The popup shows manual instructions after ~6s — or after ~40s when the CC toggle reported itself as already on, since silence is then the expected reason for having no captions yet.
 
 **If auto-enable stops working after a Meet update:** open DevTools, inspect the CC button, and check its `aria-label`, `data-tooltip`, and `jsname`. Update `findCCButton()` in `content.js`.
 
@@ -105,6 +111,15 @@ The current `jsname` values in `SELECTORS` (top of `content.js`):
 - `bVV8Bd` — caption text span
 
 **If captions stop working after a Meet update:** enable CC in Meet, open DevTools → Elements, search for the live caption text, and trace up to find the new `jsname` values. Update the `SELECTORS` object in `content.js`.
+
+### Debug logging
+
+`content.js` has a `DEBUG` constant at the top (default `false`). Two loggers:
+
+- `INFO(...)` — always on; only once-per-meeting lifecycle events (capture start/stop, strategy attached, CC button clicked, language modal auto-confirmed).
+- `LOG(...)` — verbose, silenced unless `DEBUG = true`. Covers the hot path: per-mutation strategy scans, DOM-structure dumps, and every committed caption line (which contains meeting content).
+
+To diagnose caption/DOM issues, set `DEBUG = true`, reload the extension **and** the Meet tab, then filter the DevTools console by `[MeetTranscript]`. Leave it `false` for normal use so caption contents aren't written to the console on every DOM mutation.
 
 ## Meeting info scraping (`scrapeMeetingInfoAsync`)
 

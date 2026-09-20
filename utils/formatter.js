@@ -30,20 +30,30 @@ function formatDate(ts) {
 }
 
 /**
- * Build a filename for the transcript download.
+ * Build a filename for the transcript download, using LOCAL time so it matches
+ * the "Start:" field in the transcript header (which is also local time).
  * Example: meet-transcript-2026-03-19T14-32-00.txt
  */
 export function buildFilename(startTime, format = 'txt') {
-  const iso = new Date(startTime).toISOString().slice(0, 19).replace(/:/g, '-');
-  return `meet-transcript-${iso}.${format}`;
+  const d = new Date(startTime);
+  const pad = n => String(n).padStart(2, '0');
+  const stamp =
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
+  return `meet-transcript-${stamp}.${format}`;
 }
+
+// Locale words Google Meet uses to label the local user's own captions.
+// Keep in sync with YOU_WORDS in content.js (no shared import — different module
+// systems). If you add a locale here, mirror it there.
+const YOU_EXACT_RE = /^(?:you|vous|du|tú|tu|ty|вы|あなた)$/i;
 
 /**
  * Replace Meet's generic "You" speaker label with the detected local user name.
  * Meet uses locale-specific words for the local user's captions (e.g. "You", "Du", "Vous").
  */
 function resolveSpeaker(speaker, localUser) {
-  if (localUser && /^(you|vous|du|tú|tu|ty|вы|あなた)$/i.test(speaker.trim())) {
+  if (localUser && YOU_EXACT_RE.test(speaker.trim())) {
     return localUser;
   }
   return speaker;
@@ -55,9 +65,8 @@ function resolveSpeaker(speaker, localUser) {
  * local user — they know who they are; no point showing a raw "You" in the list).
  */
 function speakersFromLines(lines, localUser) {
-  const YOU_RE = /^(you|vous|du|tú|tu|ty|вы|あなた)$/i;
   return [...new Set(lines.map(l => resolveSpeaker(l.speaker, localUser)))]
-    .filter(s => s.length > 0 && (localUser || !YOU_RE.test(s.trim())));
+    .filter(s => s.length > 0 && (localUser || !YOU_EXACT_RE.test(s.trim())));
 }
 
 /**

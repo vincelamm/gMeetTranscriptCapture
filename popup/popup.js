@@ -51,11 +51,17 @@ function showView(name) {
   }
 }
 
+/** German line-count label with correct singular/plural. */
+function lineCountText(count) {
+  const n = count || 0;
+  return n === 1 ? '1 Zeile erfasst' : `${n} Zeilen erfasst`;
+}
+
 function renderIdle(state) {
   showView('idle');
   if (state.lineCount > 0) {
     prevTranscript.classList.remove('hidden');
-    idleCount.textContent = `${state.lineCount} line${state.lineCount !== 1 ? 's' : ''} captured`;
+    idleCount.textContent = lineCountText(state.lineCount);
   } else {
     prevTranscript.classList.add('hidden');
   }
@@ -96,14 +102,20 @@ function formatDuration(ms) {
 }
 
 function updateLineCount(count) {
-  capturingCount.textContent = `${count} line${count !== 1 ? 's' : ''} captured`;
+  capturingCount.textContent = lineCountText(count);
 }
 
 // ---------------------------------------------------------------------------
 // Background communication
 // ---------------------------------------------------------------------------
 async function sendMessage(msg) {
-  return chrome.runtime.sendMessage(msg);
+  // The service worker may be mid-restart; never let a rejected/undefined
+  // response crash the popup — callers get a safe empty object instead.
+  try {
+    return (await chrome.runtime.sendMessage(msg)) ?? {};
+  } catch {
+    return {};
+  }
 }
 
 function connectPort() {
@@ -119,7 +131,7 @@ function connectPort() {
     }
     if (msg.type === 'CC_STATUS' && msg.status === 'not_found') {
       // Captions still not detected after several attempts — show manual instructions
-      if (waitingMessage) waitingMessage.textContent = 'Captions not detected yet.';
+      if (waitingMessage) waitingMessage.textContent = 'Untertitel noch nicht erkannt.';
       if (ccWarning) ccWarning.classList.remove('hidden');
     }
     if (msg.type === 'CC_FOUND') {
@@ -154,10 +166,12 @@ async function initialize() {
 
   const state = await sendMessage({ type: 'GET_STATE' });
 
-  if (state.isCapturing) {
+  // Fall back to a clean idle view if the background couldn't answer
+  // (error response or service worker restarting).
+  if (state && !state.error && state.isCapturing) {
     renderCapturing(state);
   } else {
-    renderIdle(state);
+    renderIdle(state && !state.error ? state : { lineCount: 0 });
   }
 }
 
@@ -172,11 +186,11 @@ btnStart.addEventListener('click', async () => {
     if (ccWarning) ccWarning.classList.add('hidden');
     if (waitingMessage) {
       if (response.ccAction === 'clicked') {
-        waitingMessage.textContent = 'Captions enabled! Waiting for text to appear…';
+        waitingMessage.textContent = 'Untertitel aktiviert! Warte auf Text…';
       } else if (response.ccAction === 'already_on') {
-        waitingMessage.textContent = 'Captions seem to be enabled. Waiting for text…';
+        waitingMessage.textContent = 'Untertitel scheinen aktiv zu sein. Warte auf Text…';
       } else {
-        waitingMessage.textContent = 'Waiting for captions to appear…';
+        waitingMessage.textContent = 'Warte auf Untertitel…';
       }
     }
   } else if (response?.status === 'ok') {
@@ -185,7 +199,7 @@ btnStart.addEventListener('click', async () => {
   } else if (response?.error?.includes('Could not reach')) {
     showView('reload');
   } else {
-    alert(response?.error || 'Could not start capture.');
+    alert(response?.error || 'Aufnahme konnte nicht gestartet werden.');
   }
 });
 
@@ -242,6 +256,10 @@ btnClear.addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 // Update check
 // ---------------------------------------------------------------------------
+const REPO = 'vincelamm/gMeetTranscriptCapture';
+// Accepts "1.2.3" or "v1.2.3" — anything else is treated as untrusted/invalid.
+const VERSION_TAG_RE = /^v?\d+\.\d+\.\d+$/;
+
 function isNewerVersion(latest, current) {
   const parse = v => v.split('.').map(Number);
   const [lMaj, lMin, lPat] = parse(latest);
@@ -264,7 +282,7 @@ async function checkForUpdate() {
   } else {
     try {
       const res = await fetch(
-        'https://api.github.com/repos/vincelamm/gMeetTranscriptCapture/releases/latest',
+        `https://api.github.com/repos/${REPO}/releases/latest`,
         { headers: { Accept: 'application/vnd.github+json' } }
       );
       if (!res.ok) return;
@@ -276,15 +294,20 @@ async function checkForUpdate() {
     }
   }
 
-  if (!latestTag) return;
+  // Reject anything that isn't a clean semver tag before comparing or rendering
+  // (defends against unexpected/hostile tag_name values).
+  if (!latestTag || !VERSION_TAG_RE.test(latestTag)) return;
   const current = chrome.runtime.getManifest().version;
   const latest = latestTag.replace(/^v/, '');
 
   if (isNewerVersion(latest, current)) {
-    const el = document.getElementById('footer-update');
-    el.innerHTML =
-      `<a href="https://github.com/vincelamm/gMeetTranscriptCapture/releases/latest" target="_blank">` +
-      `${latestTag} verfügbar</a>`;
+    // Build the link with the DOM API — never inject remote text via innerHTML.
+    const link = document.createElement('a');
+    link.href = `https://github.com/${REPO}/releases/latest`;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = `${latestTag} verfügbar`;
+    document.getElementById('footer-update').replaceChildren(link);
   }
 }
 
