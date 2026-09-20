@@ -1,0 +1,95 @@
+name: Release
+
+# Cuts a tag and a GitHub Release whenever the version in manifest.json changes
+# on main. The extension's own update check reads the *release* (not the tag)
+# from the GitHub API, so a tag alone would not reach users — which is how
+# v1.4.12 through v1.4.16 ended up invisible to everyone running the extension.
+on:
+  push:
+    branches: [main]
+    paths: ['manifest.json']
+  workflow_dispatch: # manual re-run, e.g. after a failed release
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so --generate-notes can diff against the last tag
+
+      - name: Read version from manifest.json
+        id: manifest
+        run: |
+          set -euo pipefail
+          version=$(jq -er '.version' manifest.json)
+          # Chrome allows up to four parts; this project uses plain semver.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::manifest.json version '$version' is not X.Y.Z"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version"    >> "$GITHUB_OUTPUT"
+          echo "Version: $version"
+
+      - name: Skip if this version was already released
+        id: check
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${{ steps.manifest.outputs.tag }}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ steps.manifest.outputs.tag }} already exists — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A syntax error would ship a completely dead extension: Chrome silently
+      # refuses to load the file and the user sees no captions at all.
+      - name: Syntax-check the extension sources
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          for f in background.js content.js popup/popup.js utils/*.js; do
+            node --check "$f"
+            echo "ok  $f"
+          done
+          jq -e '.manifest_version == 3' manifest.json > /dev/null
+
+      - name: Package the extension
+        if: steps.check.outputs.exists == 'false'
+        id: package
+        run: |
+          set -euo pipefail
+          name="meet-transcript-capture-${{ steps.manifest.outputs.tag }}.zip"
+          mkdir -p dist
+          # Ship only what Chrome loads — no tickets/, CLAUDE.md, workflows or
+          # the icon generator.
+          zip -r "dist/$name" \
+            manifest.json background.js content.js \
+            utils popup icons \
+            README.md LICENSE \
+            -x '*.DS_Store'
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          unzip -l "dist/$name"
+
+      - name: Create tag and release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.manifest.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+          # --generate-notes diffs against the previous release by itself;
+          # passing an empty --notes-start-tag would fail the call.
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            "dist/${{ steps.package.outputs.name }}"
+          echo "::notice::Released $TAG"
