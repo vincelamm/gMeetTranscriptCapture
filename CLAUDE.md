@@ -105,11 +105,30 @@ If auto-enable fails, the extension polls every 2s. The popup shows manual instr
 
 **If auto-enable stops working after a Meet update:** open DevTools, inspect the CC button, and check its `aria-label`, `data-tooltip`, and `jsname`. Update `findCCButton()` in `content.js`.
 
-### False positive protection (`findAriaLiveContainer`)
+### False positive protection
 
-Meet has multiple `aria-live="polite"` elements (e.g. "Your camera is on"). The caption container is distinguished by:
-- Having child elements (speaker blocks) — status messages are flat text
-- Having substantial text length (>80 chars) or multiple children
+Meet's **status announcements share the aria-live mechanism with the captions**, so the fallback strategies cannot tell them apart by the attribute alone. Real transcripts captured nothing but announcements:
+
+```
+Meeting details panel is open
+People panel is open
+Someone wants to join this call. Use "People" to admit or deny.
+<Name> (outside <Org>) joined
+```
+
+Worse than the noise itself: a matched announcement region makes `detectStrategy()` report success, so **CC auto-enable is skipped entirely** — the extension believes captions are already running.
+
+Three layers guard against this:
+
+1. **`looksLikeCaptionRegion()`** gates strategies E and F. Accepts a region only if it (or an ancestor) is labelled as captions, or it has caption *structure*: a child block with at least two text-bearing children (speaker label + text). Announcements are a single flat string. Strategy F previously accepted a lone aria-live element unconditionally — that is what produced the transcripts above.
+2. **`isMeetAnnouncement()`** blocklists known announcement phrasings, applied only to strings under 120 chars so a long utterance containing such a phrase is never dropped.
+3. **`isInDialog()`** rejects anything inside `[role="dialog"]`.
+
+A blocklist alone cannot win this — the phrasings are open-ended — so layer 1 is the load-bearing one.
+
+### Capture suppression while operating Meet's UI
+
+The extension clicks Meet's own controls (CC button, details panel, settings dialog), and Meet answers each click with an aria-live announcement. `suppressCaptureFor(ms)` sets a short deadline during which `processCaptionUpdate()` and the polling scan ignore everything. It is a deadline rather than a flag on purpose: real speech during the window would be lost, so it must stay short (1.5–2.5s per interaction).
 
 ## Google Meet DOM selectors
 

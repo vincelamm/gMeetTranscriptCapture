@@ -50,20 +50,28 @@ const STRATEGIES = [
     ),
     extractSpeakers: (container) => extractByPosition(container),
   },
-  // Strategy E: text-only fallback — no speaker attribution, just deduplicated text
+  // Strategy E: text-only fallback — no speaker attribution, just deduplicated
+  // text. Gated behind looksLikeCaptionRegion(): without that gate it happily
+  // latches onto Meet's status-announcement region, which is also aria-live.
   {
     name: 'text-only',
-    findContainer: () => findAriaLiveContainer(),
+    findContainer: () => {
+      const el = findAriaLiveContainer();
+      return el && looksLikeCaptionRegion(el) ? el : null;
+    },
     extractSpeakers: (container) => extractTextOnly(container),
   },
-  // Strategy F: single-aria-live — if there is exactly one live region in the
-  // entire DOM it must be the CC widget; accept it unconditionally (even when
-  // empty) so the MutationObserver starts watching before the first utterance.
+  // Strategy F: single-aria-live — when the CC widget is the only live region
+  // in the DOM. Used to accept its container unconditionally "even when empty";
+  // that is exactly how Meet's announcement region ("People panel is open",
+  // "… joined") ended up being recorded as the entire transcript, so it now has
+  // to look like a caption region too.
   {
     name: 'single-aria-live',
     findContainer: () => {
       const all = [...document.querySelectorAll('[aria-live]')];
-      return all.length === 1 ? all[0] : null;
+      const el = all.length === 1 ? all[0] : null;
+      return el && looksLikeCaptionRegion(el) ? el : null;
     },
     extractSpeakers: (container) => {
       const byPos = extractByPosition(container);
@@ -71,6 +79,38 @@ const STRATEGIES = [
     },
   },
 ];
+
+/**
+ * Does this aria-live element plausibly hold captions rather than Meet's UI
+ * status announcements?
+ *
+ * Both use aria-live, so the fallback strategies cannot tell them apart by the
+ * attribute alone. Real transcripts captured nothing but announcements until
+ * this gate existed. Two accepted signals:
+ *
+ *   1. it (or an ancestor) is explicitly labelled as the captions region
+ *   2. it has caption *structure* — a child block holding at least two
+ *      text-bearing children (speaker label + caption text). Announcements are
+ *      a single flat string.
+ */
+function looksLikeCaptionRegion(el) {
+  if (!el) return false;
+
+  const labelled = el.closest(
+    '[aria-label*="caption" i], [aria-label*="untertitel" i], [aria-label*="subtitle" i], ' +
+    '[aria-label*="sous-titre" i], [aria-label*="sottotitoli" i], [aria-label*="subtítulo" i], ' +
+    '[jsname="tgaKEf"], [jsname="DS9Ooe"]'
+  );
+  if (labelled) return true;
+
+  for (const block of el.children) {
+    const textKids = [...block.children].filter(k => k.textContent.trim().length > 0);
+    if (textKids.length >= 2) return true;
+  }
+
+  LOG('looksLikeCaptionRegion: rejected', el.tagName, JSON.stringify(el.textContent.trim().slice(0, 60)));
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Extraction methods
@@ -142,7 +182,47 @@ function extractTextOnly(container) {
   if (!text) return new Map();
   // Reject CC language/settings panels: more than 3 BETA-tagged items = language list
   if ((text.match(/\bBETA\b/g) || []).length > 3) return new Map();
+  if (isMeetAnnouncement(text)) {
+    LOG('extractTextOnly: rejected Meet UI announcement:', text.slice(0, 80));
+    return new Map();
+  }
   return new Map([['(speaker)', text]]);
+}
+
+/**
+ * Meet's own screen-reader announcements, which live in aria-live regions just
+ * like the captions do. Without this filter they end up in the transcript as
+ * speakerless lines — and worse, a matched announcement region makes
+ * detectStrategy() report success, so the CC auto-enable never runs at all.
+ *
+ * Observed in the wild: opening the meeting details panel (which this extension
+ * does itself when scraping) announces "Meeting details panel is open", which
+ * was then recorded as the first and only caption line.
+ */
+const MEET_ANNOUNCEMENT_RE = new RegExp([
+  'panel is (open|closed)',
+  'panel (ist )?(geöffnet|geschlossen)',
+  '\\b(your|dein|ihr)\\b.{0,20}\\b(camera|microphone|kamera|mikrofon)\\b',
+  '\\b(camera|microphone|kamera|mikrofon)\\b.{0,20}\\b(is |ist )?(on|off|an|aus|ein)\\b',
+  '\\b(joined|left|beigetreten|verlassen)\\b.{0,30}\\b(meeting|call|besprechung|anruf)\\b',
+  // "<Name> (outside <Org>) joined" / "Max Mustermann hat den Anruf verlassen"
+  '\\b(joined|left)\\s*$',
+  '\\b(hat|ist)\\b.{0,40}\\b(beigetreten|verlassen)\\b',
+  // "Someone wants to join this call. Use \"People\" to admit or deny."
+  'wants to join|möchte (dem Anruf )?beitreten|admit or deny|zulassen oder ablehnen',
+  '\\b(is|are|wird|werden)\\s+(now\\s+)?(presenting|pinned|muted|unmuted|stummgeschaltet|angeheftet)',
+  '\\b(recording|aufzeichnung)\\b.{0,20}\\b(started|stopped|gestartet|beendet)\\b',
+  'raised (their )?hand|hat die hand gehoben',
+  'you are the only (one|person) here|du bist allein',
+].join('|'), 'i');
+
+/**
+ * True if the text is one of Meet's UI status announcements rather than speech.
+ * Only applied to short strings: real captions grow well past this, and a long
+ * utterance that happens to contain such a phrase must not be dropped.
+ */
+function isMeetAnnouncement(text) {
+  return text.length < 120 && MEET_ANNOUNCEMENT_RE.test(text);
 }
 
 /** Returns true if a string looks like a sentence fragment rather than a name. */
@@ -180,6 +260,9 @@ function findAriaLiveContainer() {
     ...document.querySelectorAll('[aria-live="polite"], [aria-live="assertive"]'),
   ].filter(el => {
     if (isInDialog(el)) return false;
+    // Meet's own status announcements share the aria-live mechanism with the
+    // captions; matching one makes detectStrategy() report a false success.
+    if (isMeetAnnouncement(el.textContent.trim())) return false;
     // Must have child elements — flat text nodes are status announcements
     if (el.children.length === 0) return false;
     const text = el.textContent.trim();
@@ -341,6 +424,38 @@ async function scrapeMeetingInfoAsync() {
 
   detectLocalUser(info);
 
+  // Everything below clicks Meet's own UI. Meet answers those clicks with
+  // aria-live announcements ("Meeting details panel is open") that are
+  // indistinguishable from captions to the fallback strategies — one ended up
+  // in a real transcript as the only line. Pause capture for the duration.
+  suppressCaptureFor(2000);
+  try {
+    return await scrapeDetailsPanel(info);
+  } finally {
+    // Leave a margin: Meet announces the panel *closing* too.
+    suppressCaptureFor(1500);
+  }
+}
+
+/**
+ * Capture is paused while the extension itself operates Meet's UI, so that
+ * Meet's reaction to our own clicks never reaches the transcript.
+ *
+ * A deadline rather than a flag: the window must stay short, because real
+ * speech during it would be lost. Each click we make extends it a little.
+ */
+let suppressUntil = 0;
+
+function suppressCaptureFor(ms) {
+  suppressUntil = Math.max(suppressUntil, Date.now() + ms);
+}
+
+function isCaptureSuppressed() {
+  return Date.now() < suppressUntil;
+}
+
+async function scrapeDetailsPanel(info) {
+
   // --- Meeting details panel ---
   let panel = findMeetingDetailsPanel();
   let panelWasOpened = false;
@@ -349,6 +464,7 @@ async function scrapeMeetingInfoAsync() {
     const infoBtn = findMeetingInfoButton();
     if (infoBtn) {
       LOG('Opening Meeting details panel automatically');
+      suppressCaptureFor(2500);
       infoBtn.click();
       panelWasOpened = true;
       // Poll instead of a fixed wait — on slow machines the panel needs well
@@ -380,6 +496,7 @@ async function scrapeMeetingInfoAsync() {
       '[aria-label*="Close" i], [aria-label*="Schließen" i], [aria-label*="Fermer" i], [aria-label*="Cerrar" i]'
     );
     if (closeBtn) {
+      suppressCaptureFor(1500);
       closeBtn.click();
       LOG('Meeting details panel closed via close button');
     } else {
@@ -708,6 +825,7 @@ const UTTERANCE_EXPIRY_MS = 12000;
 // Debounce / deduplication
 // ---------------------------------------------------------------------------
 function processCaptionUpdate(currentSpeakers) {
+  if (isCaptureSuppressed()) return; // the extension is operating Meet's UI right now
   for (const [speaker, text] of currentSpeakers) {
     const buf = speakerBuffers.get(speaker);
 
@@ -935,8 +1053,11 @@ function tryEnableCC() {
     return 'already_on';
   }
 
+  // Meet announces the toggle ("Captions are on") via aria-live, and may open
+  // the settings dialog we then click through — none of that is speech.
+  suppressCaptureFor(2000);
   ccButton.click();
-  LOG('CC button found and clicked');
+  INFO('CC button clicked:', labelOf(ccButton).trim());
   // Meet may respond by opening Settings → Captions instead of switching
   // captions on directly (users without a saved caption language). Handle that
   // panel; fire-and-forget, the capture polling picks up from there.
@@ -983,6 +1104,7 @@ async function handleCaptionSettingsDialog() {
     if (!dialog) continue;
 
     INFO('Caption settings dialog detected — configuring and closing');
+    suppressCaptureFor(2000);
     selectAutomaticCaptions(dialog);
     await sleep(300); // let Meet apply the radio change before the dialog goes away
     closeDialog(dialog);
@@ -1170,8 +1292,8 @@ function isCaptionToggle(el) {
 }
 
 function logCCDiagnostics() {
-  const clickables = document.querySelectorAll('button, [role="button"]');
-  const labels = [...clickables]
+  const clickables = [...document.querySelectorAll('button, [role="button"]')];
+  const labels = clickables
     .map(el => ({
       tag: el.tagName,
       ariaLabel: el.getAttribute('aria-label'),
@@ -1179,7 +1301,17 @@ function logCCDiagnostics() {
       jsname: el.getAttribute('jsname'),
     }))
     .filter(x => x.ariaLabel || x.tooltip);
-  LOG('CC diagnostics — clickable elements with labels:', JSON.stringify(labels, null, 2));
+
+  // Shown without DEBUG: when auto-enable fails this is the one thing needed to
+  // fix it, and asking users to flip a source constant first does not work.
+  const captionish = labels.filter(x =>
+    /caption|untertitel|subtitle|sous-titre|sottotitoli|subtítulo|legenda|\(c\)/i
+      .test((x.ariaLabel || '') + ' ' + (x.tooltip || ''))
+  );
+  INFO('CC button not found. Caption-related controls in the DOM:',
+    captionish.length ? captionish : '(none — is the meeting toolbar loaded?)');
+
+  LOG('CC diagnostics — all clickable elements with labels:', JSON.stringify(labels, null, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,6 +1333,8 @@ function startScan(ccKnownOn = false) {
   const warnAfter = ccKnownOn ? 20 : 3;
   LOG('Polling for caption container every 2s…');
   scanInterval = setInterval(() => {
+    // Never latch onto a container while our own clicks are changing Meet's UI.
+    if (isCaptureSuppressed()) return;
     const match = detectStrategy();
     if (match) {
       stopScan();
