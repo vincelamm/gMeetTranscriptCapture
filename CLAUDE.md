@@ -48,6 +48,9 @@ meet.google.com DOM
 ```js
 {
   isCapturing: boolean,
+  capturePhase: 'idle' | 'waiting_for_captions' | 'capturing',
+  ccWarning: boolean,         // captions not detected — popup shows manual steps
+  ccAction: 'clicked' | 'already_on' | 'not_found' | null,
   meetingTitle: string,       // from tab title
   meetingInfo: {              // from DOM scraping, null if unavailable
     scheduledTime?: string,   // "Sat, Jul 18, 2026 9:00 AM – 10:00 AM"
@@ -69,7 +72,19 @@ meet.google.com DOM
 - `chrome.storage.session` (not an in-memory variable) stores the transcript lines because the MV3 service worker is ephemeral and can be terminated mid-meeting.
 - The popup opens a long-lived `chrome.runtime.Port` (named `"popup"`) to receive push updates from the background rather than polling.
 - `background.js` uses `"type": "module"` in the manifest so it can import `utils/formatter.js` as an ES module.
-- Meeting info is scraped **fire-and-forget** so caption capture starts immediately without waiting for the panel animation.
+- Meeting info is scraped **after** the CC handling finishes and only while no Meet dialog is open (`scheduleMeetingInfoScrape`). Running it concurrently with the CC click made the two click sequences interfere.
+- `capturePhase` lives in the persisted state, not in the popup. The popup closes on the first click into the Meet page, so `isCapturing` alone cannot tell "waiting for captions" from "recording" on reopen.
+
+## Observer health check
+
+A `MutationObserver` is bound to one node. When Meet tears the caption region down and rebuilds it (CC toggled, presentation started, layout change, breakout room), the observed node is detached and **the callback never fires again** — re-acquiring the container inside the callback cannot help, because the callback is what stopped running. Capture then silently records nothing.
+
+`checkObserverHealth()` runs every 5s while capturing:
+
+1. `observedContainer.isConnected === false` → re-detect and re-attach, or fall back to `startScan()` and send `CC_STATUS: 'lost'`.
+2. Attached for > 60s with zero lines → re-run `detectStrategy()`; switch if it now yields a *different* container (catches Strategy E/F latching onto the wrong element).
+
+The popup shows a hint after 2 minutes of recording with 0 lines, and the toolbar badge turns amber in the same situation.
 
 ## Auto-enable CC (Closed Captions)
 
@@ -80,15 +95,40 @@ When the user clicks "Start Capture" and captions are not yet visible, `content.
 3. **`jsname` match** — known `jsname` values for the CC button (`r8qRAd`, `Dg9Wp`)
 4. **Toolbar scan** — searches inside `[role="toolbar"]` containers with the same keyword/shortcut matching
 
-If auto-enable fails, the extension polls every 2s and retries once after ~4s (the toolbar may load late). After ~6s the popup shows a warning with manual instructions.
+**Every pass is filtered through `isCaptionToggle()`**, which rejects elements whose label looks like a settings/options/language control and anything inside a `[role="dialog"]`. Without that filter the *caption settings* entry wins the keyword pass in localized UIs (it also contains "Untertitel"/"captions"), and clicking it opens Meet's **Settings → Captions** dialog instead of enabling captions. That was the cause of the "a window pops up when I start capture" reports up to v1.4.12.
+
+**Before clicking, `isCCButtonOn()` checks whether captions are already on** (`aria-pressed`, else a "turn off / deaktivieren" verb in the label). This matters because a missing caption container does *not* mean captions are off — Meet only renders the container once someone has spoken. Clicking blindly would switch captions **off** for users who enabled CC themselves before starting the capture.
+
+If Meet responds to the click by opening Settings → Captions (users without a stored caption language), `handleCaptionSettingsDialog()` selects the "automatic captions" radio and closes the dialog. That dialog has **no confirm button** — Meet applies changes immediately. Never click an unidentified button in it: the only text button is "Reset", which would wipe the user's caption preferences.
+
+If auto-enable fails, the extension polls every 2s. The popup shows manual instructions after ~6s — or after ~40s when the CC toggle reported itself as already on, since silence is then the expected reason for having no captions yet.
 
 **If auto-enable stops working after a Meet update:** open DevTools, inspect the CC button, and check its `aria-label`, `data-tooltip`, and `jsname`. Update `findCCButton()` in `content.js`.
 
-### False positive protection (`findAriaLiveContainer`)
+### False positive protection
 
-Meet has multiple `aria-live="polite"` elements (e.g. "Your camera is on"). The caption container is distinguished by:
-- Having child elements (speaker blocks) — status messages are flat text
-- Having substantial text length (>80 chars) or multiple children
+Meet's **status announcements share the aria-live mechanism with the captions**, so the fallback strategies cannot tell them apart by the attribute alone. Real transcripts captured nothing but announcements:
+
+```
+Meeting details panel is open
+People panel is open
+Someone wants to join this call. Use "People" to admit or deny.
+<Name> (outside <Org>) joined
+```
+
+Worse than the noise itself: a matched announcement region makes `detectStrategy()` report success, so **CC auto-enable is skipped entirely** — the extension believes captions are already running.
+
+Three layers guard against this:
+
+1. **`looksLikeCaptionRegion()`** gates strategies E and F. Accepts a region only if it (or an ancestor) is labelled as captions, or it has caption *structure*: a child block with at least two text-bearing children (speaker label + text). Announcements are a single flat string. Strategy F previously accepted a lone aria-live element unconditionally — that is what produced the transcripts above.
+2. **`isMeetAnnouncement()`** blocklists known announcement phrasings, applied only to strings under 120 chars so a long utterance containing such a phrase is never dropped.
+3. **`isInDialog()`** rejects anything inside `[role="dialog"]`.
+
+A blocklist alone cannot win this — the phrasings are open-ended — so layer 1 is the load-bearing one.
+
+### Capture suppression while operating Meet's UI
+
+The extension clicks Meet's own controls (CC button, details panel, settings dialog), and Meet answers each click with an aria-live announcement. `suppressCaptureFor(ms)` sets a short deadline during which `processCaptionUpdate()` and the polling scan ignore everything. It is a deadline rather than a flag on purpose: real speech during the window would be lost, so it must stay short (1.5–2.5s per interaction).
 
 ## Google Meet DOM selectors
 
@@ -105,6 +145,15 @@ The current `jsname` values in `SELECTORS` (top of `content.js`):
 - `bVV8Bd` — caption text span
 
 **If captions stop working after a Meet update:** enable CC in Meet, open DevTools → Elements, search for the live caption text, and trace up to find the new `jsname` values. Update the `SELECTORS` object in `content.js`.
+
+### Debug logging
+
+`content.js` has a `DEBUG` constant at the top (default `false`). Two loggers:
+
+- `INFO(...)` — always on; only once-per-meeting lifecycle events (capture start/stop, strategy attached, CC button clicked, language modal auto-confirmed).
+- `LOG(...)` — verbose, silenced unless `DEBUG = true`. Covers the hot path: per-mutation strategy scans, DOM-structure dumps, and every committed caption line (which contains meeting content).
+
+To diagnose caption/DOM issues, set `DEBUG = true`, reload the extension **and** the Meet tab, then filter the DevTools console by `[MeetTranscript]`. Leave it `false` for normal use so caption contents aren't written to the console on every DOM mutation.
 
 ## Meeting info scraping (`scrapeMeetingInfoAsync`)
 

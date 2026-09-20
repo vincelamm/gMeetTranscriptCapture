@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -12,15 +12,15 @@
     <!-- Not on a Meet tab -->
     <div id="view-no-meet" class="view hidden">
       <div class="icon">📋</div>
-      <p class="message">Open a Google Meet tab to use this extension.</p>
+      <p class="message">Öffne einen Google-Meet-Tab, um die Erweiterung zu nutzen.</p>
     </div>
 
     <!-- Content script not reachable (tab needs reload) -->
     <div id="view-reload" class="view hidden">
       <div class="icon">🔄</div>
-      <h2>Tab reload required</h2>
-      <p class="message">The extension was updated after this tab was opened. Please reload the Meet tab to continue.</p>
-      <button id="btn-reload-tab" class="btn btn-primary">Reload Meet tab</button>
+      <h2>Tab-Neuladen erforderlich</h2>
+      <p class="message">Die Erweiterung wurde aktualisiert, nachdem dieser Tab geöffnet wurde. Bitte lade den Meet-Tab neu, um fortzufahren.</p>
+      <button id="btn-reload-tab" class="btn btn-primary">Meet-Tab neu laden</button>
     </div>
 
     <!-- On a Meet tab, idle -->
@@ -28,36 +28,39 @@
       <div class="icon">📋</div>
       <h2>Meet Transcript Capture</h2>
       <p class="hint">
-        Captions (CC) will be enabled automatically when you start capture.
+        Untertitel (CC) werden beim Start automatisch aktiviert.
       </p>
       <p class="consent-notice">
-        By starting, you confirm that all participants have been informed that this call is being transcribed.
+        Mit dem Start bestätigst du, dass alle Teilnehmenden über die Transkription informiert wurden.
       </p>
-      <button id="btn-start" class="btn btn-primary">Start Capture</button>
+      <button id="btn-start" class="btn btn-primary">Aufnahme starten</button>
       <div id="prev-transcript" class="hidden">
         <hr />
         <p class="line-count" id="idle-line-count"></p>
         <div class="row">
-          <button id="btn-download-txt" class="btn btn-secondary">Download .txt</button>
-          <button id="btn-download-md" class="btn btn-secondary">Download .md</button>
+          <button id="btn-download-txt" class="btn btn-secondary">.txt herunterladen</button>
+          <button id="btn-download-md" class="btn btn-secondary">.md herunterladen</button>
         </div>
         <button id="btn-copy-prompt" class="btn btn-ai">KI-Prompt kopieren</button>
-        <button id="btn-clear" class="btn btn-ghost">Clear</button>
+        <button id="btn-clear" class="btn btn-ghost">Verwerfen</button>
       </div>
     </div>
 
     <!-- Capturing -->
     <div id="view-capturing" class="view hidden">
       <div class="status-dot"></div>
-      <h2>Capturing…</h2>
-      <p class="line-count" id="capturing-line-count">0 lines captured</p>
+      <h2>Aufnahme läuft…</h2>
+      <p class="line-count" id="capturing-line-count">0 Zeilen erfasst</p>
       <p class="elapsed" id="elapsed">00:00:00</p>
-      <button id="btn-stop" class="btn btn-danger">Stop Capture</button>
+      <div id="no-lines-hint" class="cc-warning hidden">
+        <p>Es kommen keine Untertitel an. Bitte prüfe, ob die Untertitel (CC) in Meet noch aktiv sind.</p>
+      </div>
+      <button id="btn-stop" class="btn btn-danger">Aufnahme stoppen</button>
       <hr />
       <p class="hint">Transkript exportieren</p>
       <div class="row">
-        <button id="btn-download-live-txt" class="btn btn-secondary">Download .txt</button>
-        <button id="btn-download-live-md" class="btn btn-secondary">Download .md</button>
+        <button id="btn-download-live-txt" class="btn btn-secondary">.txt herunterladen</button>
+        <button id="btn-download-live-md" class="btn btn-secondary">.md herunterladen</button>
       </div>
       <button id="btn-copy-prompt-live" class="btn btn-ai">KI-Prompt kopieren</button>
     </div>
@@ -65,19 +68,19 @@
     <!-- Waiting for captions to be enabled -->
     <div id="view-waiting" class="view hidden">
       <div class="icon">⏳</div>
-      <h2>Waiting for captions…</h2>
+      <h2>Warte auf Untertitel…</h2>
       <p class="message" id="waiting-message">
-        Trying to enable captions automatically…
+        Versuche, Untertitel automatisch zu aktivieren…
       </p>
       <div id="cc-warning" class="cc-warning hidden">
-        <p>Captions could not be detected. Please enable them manually:</p>
+        <p>Untertitel konnten nicht erkannt werden. Bitte aktiviere sie manuell:</p>
         <ol>
-          <li>Click the <strong>CC</strong> button in Meet's bottom toolbar</li>
-          <li>Or press <kbd>c</kbd> on your keyboard</li>
+          <li>Klicke auf den <strong>CC</strong>-Button in der unteren Meet-Leiste</li>
+          <li>Oder drücke die Taste <kbd>c</kbd></li>
         </ol>
-        <p>Capture will start automatically once captions appear.</p>
+        <p>Die Aufnahme startet automatisch, sobald Untertitel erscheinen.</p>
       </div>
-      <button id="btn-cancel-wait" class="btn btn-ghost">Cancel</button>
+      <button id="btn-cancel-wait" class="btn btn-ghost">Abbrechen</button>
     </div>
 
   </div>

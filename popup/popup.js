@@ -34,12 +34,14 @@ const elapsedEl       = document.getElementById('elapsed');
 const prevTranscript  = document.getElementById('prev-transcript');
 const waitingMessage  = document.getElementById('waiting-message');
 const ccWarning       = document.getElementById('cc-warning');
+const noLinesHint     = document.getElementById('no-lines-hint');
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 let elapsedTimer = null;
 let captureStartTime = null;
+let currentLineCount = 0;
 let port = null;
 
 // ---------------------------------------------------------------------------
@@ -51,11 +53,17 @@ function showView(name) {
   }
 }
 
+/** German line-count label with correct singular/plural. */
+function lineCountText(count) {
+  const n = count || 0;
+  return n === 1 ? '1 Zeile erfasst' : `${n} Zeilen erfasst`;
+}
+
 function renderIdle(state) {
   showView('idle');
   if (state.lineCount > 0) {
     prevTranscript.classList.remove('hidden');
-    idleCount.textContent = `${state.lineCount} line${state.lineCount !== 1 ? 's' : ''} captured`;
+    idleCount.textContent = lineCountText(state.lineCount);
   } else {
     prevTranscript.classList.add('hidden');
   }
@@ -66,6 +74,37 @@ function renderCapturing(state) {
   updateLineCount(state.lineCount);
   captureStartTime = state.startTime;
   startElapsedTimer();
+  updateNoLinesHint(state);
+}
+
+/**
+ * Recording but nothing arriving is the failure mode users do not notice:
+ * the view says "Aufnahme läuft" while the transcript stays empty. Say so
+ * once enough time has passed that silence is no longer a good explanation.
+ */
+const NO_LINES_HINT_AFTER_MS = 120000;
+
+function updateNoLinesHint(state) {
+  if (!noLinesHint) return;
+  const elapsed = state.startTime ? Date.now() - state.startTime : 0;
+  const stalled = (state.lineCount || 0) === 0 && elapsed > NO_LINES_HINT_AFTER_MS;
+  noLinesHint.classList.toggle('hidden', !stalled);
+}
+
+/** Render the "waiting for captions" view from persisted state. */
+function renderWaiting(state) {
+  showView('waiting');
+  stopElapsedTimer();
+  if (waitingMessage) {
+    if (state.ccAction === 'clicked') {
+      waitingMessage.textContent = 'Untertitel aktiviert! Warte auf Text…';
+    } else if (state.ccAction === 'already_on') {
+      waitingMessage.textContent = 'Untertitel sind aktiv. Die Aufnahme startet, sobald jemand spricht.';
+    } else {
+      waitingMessage.textContent = 'Warte auf Untertitel…';
+    }
+  }
+  if (ccWarning) ccWarning.classList.toggle('hidden', !state.ccWarning);
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +124,8 @@ function updateElapsed() {
   if (!captureStartTime) return;
   const ms = Date.now() - captureStartTime;
   elapsedEl.textContent = formatDuration(ms);
+  // Re-check while the popup stays open — the threshold can be crossed here.
+  updateNoLinesHint({ startTime: captureStartTime, lineCount: currentLineCount });
 }
 
 function formatDuration(ms) {
@@ -96,14 +137,21 @@ function formatDuration(ms) {
 }
 
 function updateLineCount(count) {
-  capturingCount.textContent = `${count} line${count !== 1 ? 's' : ''} captured`;
+  currentLineCount = count || 0;
+  capturingCount.textContent = lineCountText(count);
 }
 
 // ---------------------------------------------------------------------------
 // Background communication
 // ---------------------------------------------------------------------------
 async function sendMessage(msg) {
-  return chrome.runtime.sendMessage(msg);
+  // The service worker may be mid-restart; never let a rejected/undefined
+  // response crash the popup — callers get a safe empty object instead.
+  try {
+    return (await chrome.runtime.sendMessage(msg)) ?? {};
+  } catch {
+    return {};
+  }
 }
 
 function connectPort() {
@@ -111,6 +159,7 @@ function connectPort() {
   port.onMessage.addListener((msg) => {
     if (msg.type === 'LINE_ADDED') {
       updateLineCount(msg.lineCount);
+      if (noLinesHint) noLinesHint.classList.add('hidden');
     }
     if (msg.type === 'CAPTURE_STOPPED') {
       stopElapsedTimer();
@@ -119,8 +168,13 @@ function connectPort() {
     }
     if (msg.type === 'CC_STATUS' && msg.status === 'not_found') {
       // Captions still not detected after several attempts — show manual instructions
-      if (waitingMessage) waitingMessage.textContent = 'Captions not detected yet.';
+      if (waitingMessage) waitingMessage.textContent = 'Untertitel noch nicht erkannt.';
       if (ccWarning) ccWarning.classList.remove('hidden');
+    }
+    if (msg.type === 'CC_STATUS' && msg.status === 'lost') {
+      // Meet tore the caption region down mid-capture — the content script is
+      // polling for it again. Show that rather than a frozen line counter.
+      renderWaiting({ ccAction: 'already_on', ccWarning: false });
     }
     if (msg.type === 'CC_FOUND') {
       // Captions detected — switch to capturing view
@@ -154,10 +208,21 @@ async function initialize() {
 
   const state = await sendMessage({ type: 'GET_STATE' });
 
-  if (state.isCapturing) {
-    renderCapturing(state);
+  // Fall back to a clean idle view if the background couldn't answer
+  // (error response or service worker restarting).
+  if (!state || state.error || !state.isCapturing) {
+    renderIdle(state && !state.error ? state : { lineCount: 0 });
+    return;
+  }
+
+  // isCapturing alone cannot distinguish "waiting for captions" from
+  // "recording" — the persisted capturePhase can. Without it the popup showed
+  // "Aufnahme läuft, 0 Zeilen" while it was really still waiting, and the
+  // manual CC instructions never became visible again after a reopen.
+  if (state.capturePhase === 'waiting_for_captions') {
+    renderWaiting(state);
   } else {
-    renderIdle(state);
+    renderCapturing(state);
   }
 }
 
@@ -167,25 +232,14 @@ async function initialize() {
 btnStart.addEventListener('click', async () => {
   const response = await sendMessage({ type: 'START_CAPTURE' });
   if (response?.status === 'waiting_for_captions') {
-    showView('waiting');
-    // Reset waiting state
-    if (ccWarning) ccWarning.classList.add('hidden');
-    if (waitingMessage) {
-      if (response.ccAction === 'clicked') {
-        waitingMessage.textContent = 'Captions enabled! Waiting for text to appear…';
-      } else if (response.ccAction === 'already_on') {
-        waitingMessage.textContent = 'Captions seem to be enabled. Waiting for text…';
-      } else {
-        waitingMessage.textContent = 'Waiting for captions to appear…';
-      }
-    }
+    renderWaiting({ ccAction: response.ccAction, ccWarning: false });
   } else if (response?.status === 'ok') {
     const state = await sendMessage({ type: 'GET_STATE' });
     renderCapturing(state);
   } else if (response?.error?.includes('Could not reach')) {
     showView('reload');
   } else {
-    alert(response?.error || 'Could not start capture.');
+    alert(response?.error || 'Aufnahme konnte nicht gestartet werden.');
   }
 });
 
@@ -242,6 +296,10 @@ btnClear.addEventListener('click', async () => {
 // ---------------------------------------------------------------------------
 // Update check
 // ---------------------------------------------------------------------------
+const REPO = 'vincelamm/gMeetTranscriptCapture';
+// Accepts "1.2.3" or "v1.2.3" — anything else is treated as untrusted/invalid.
+const VERSION_TAG_RE = /^v?\d+\.\d+\.\d+$/;
+
 function isNewerVersion(latest, current) {
   const parse = v => v.split('.').map(Number);
   const [lMaj, lMin, lPat] = parse(latest);
@@ -264,7 +322,7 @@ async function checkForUpdate() {
   } else {
     try {
       const res = await fetch(
-        'https://api.github.com/repos/vincelamm/gMeetTranscriptCapture/releases/latest',
+        `https://api.github.com/repos/${REPO}/releases/latest`,
         { headers: { Accept: 'application/vnd.github+json' } }
       );
       if (!res.ok) return;
@@ -276,15 +334,20 @@ async function checkForUpdate() {
     }
   }
 
-  if (!latestTag) return;
+  // Reject anything that isn't a clean semver tag before comparing or rendering
+  // (defends against unexpected/hostile tag_name values).
+  if (!latestTag || !VERSION_TAG_RE.test(latestTag)) return;
   const current = chrome.runtime.getManifest().version;
   const latest = latestTag.replace(/^v/, '');
 
   if (isNewerVersion(latest, current)) {
-    const el = document.getElementById('footer-update');
-    el.innerHTML =
-      `<a href="https://github.com/vincelamm/gMeetTranscriptCapture/releases/latest" target="_blank">` +
-      `${latestTag} verfügbar</a>`;
+    // Build the link with the DOM API — never inject remote text via innerHTML.
+    const link = document.createElement('a');
+    link.href = `https://github.com/${REPO}/releases/latest`;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = `${latestTag} verfügbar`;
+    document.getElementById('footer-update').replaceChildren(link);
   }
 }
 

@@ -1,0 +1,10 @@
+# Captured transcripts contain meeting content and participant names —
+# they must never enter the repository, wherever they are saved.
+meet-transcript-*.md
+meet-transcript-*.txt
+*.transcript.md
+
+# Local scratch / debug dumps
+*.local
+*.log
+.DS_Store
