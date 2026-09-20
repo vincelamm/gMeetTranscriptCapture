@@ -914,8 +914,13 @@ function commitLine(speaker) {
     // Window grew while the start is still visible — same utterance, longer.
     merged = windowText;
     isSameUtterance = true;
-  } else if (prevCore.startsWith(windowCore) || prevCore.includes(windowCore)) {
-    // New window is a shorter prefix / already-contained revision — keep prev.
+  } else if (prevCore.startsWith(windowCore)) {
+    // New window is a shorter prefix of what we have — a revision, keep prev.
+    return;
+  } else if (windowCore.length >= MIN_OVERLAP_CHARS && prevCore.includes(windowCore)) {
+    // Already contained somewhere inside the current line — keep prev.
+    // Length-gated: without it a genuine short utterance ("Ja genau", "gut")
+    // that happens to appear inside the previous line is silently dropped.
     return;
   } else {
     const k = overlapLength(prevCore, windowCore);

@@ -58,6 +58,12 @@ startet nicht zuverlässig. Das Review hat dafür drei sich überlagernde Ursach
 
 - Pro Ticket ein Commit; **Semver in `manifest.json` bumpen** (im Ticket vermerkt: Patch/Minor).
 - Vor jedem Push: alle Dateien auf sensible Daten scannen.
+- **Nie echte Meeting-Inhalte ins Repository** — weder in Code-Kommentare, Doku,
+  Ticket-Texte noch in Commit-Messages. Das betrifft gesprochene Sätze,
+  Teilnehmendennamen, Organisationsnamen, Meeting-Links und Einwahlnummern.
+  Beim Debuggen echter Transkripte immer neutralisieren (`<Name>`, `<Org>`,
+  erfundene Beispielsätze), bevor etwas committet wird. Transkriptdateien sind
+  zusätzlich über `.gitignore` gesperrt.
 - Änderungen an `content.js` erfordern Reload der Extension **und** des Meet-Tabs;
   Verhalten gegen echtes Meet-DOM kann nur manuell im Meeting verifiziert werden.
 
