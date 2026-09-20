@@ -855,6 +855,14 @@ function processCaptionUpdate(currentSpeakers) {
  * the window scrolls off, the new window text overlaps the tail of what we
  * already committed, and we append only the non-overlapping remainder.
  */
+/**
+ * Trailing punctuation and whitespace that Meet adds when it considers a phrase
+ * finished and removes again when the sentence turns out to continue.
+ */
+function stripTrailingPunctuation(s) {
+  return s.replace(/[\s.,!?;:…]+$/u, '');
+}
+
 function overlapLength(a, b) {
   const max = Math.min(a.length, b.length, 400);
   for (let k = max; k > 0; k--) {
@@ -884,24 +892,38 @@ function commitLine(speaker) {
   let merged;
   let isSameUtterance;
 
+  // Compare on punctuation-stripped text. Meet appends a period once it
+  // considers a phrase finished and drops it again as the sentence continues,
+  // so "Wir fangen an." vs "Wir fangen an mit dem Thema." failed
+  // every raw prefix and overlap check and produced three lines for one
+  // sentence. Only the comparisons are normalised — output keeps Meet's
+  // punctuation.
+  const prevCore = stripTrailingPunctuation(prev);
+  const windowCore = stripTrailingPunctuation(windowText);
+
   if (!prev || expired) {
     // Nothing to continue (or too much silence) — start a fresh line.
     merged = windowText;
     isSameUtterance = false;
-  } else if (windowText === prev) {
-    return; // unchanged
-  } else if (windowText.startsWith(prev)) {
+  } else if (windowCore === prevCore) {
+    // Same words — Meet only added or removed trailing punctuation.
+    if (windowText === prev) return;
+    merged = windowText;
+    isSameUtterance = true;
+  } else if (windowCore.startsWith(prevCore)) {
     // Window grew while the start is still visible — same utterance, longer.
     merged = windowText;
     isSameUtterance = true;
-  } else if (prev.startsWith(windowText) || prev.includes(windowText)) {
+  } else if (prevCore.startsWith(windowCore) || prevCore.includes(windowCore)) {
     // New window is a shorter prefix / already-contained revision — keep prev.
     return;
   } else {
-    const k = overlapLength(prev, windowText);
+    const k = overlapLength(prevCore, windowCore);
     if (k >= MIN_OVERLAP_CHARS) {
       // Rolling window scrolled: stitch the non-overlapping tail onto prev.
-      merged = prev + windowText.slice(k);
+      // prevCore, not prev — otherwise a stripped period would reappear
+      // mid-sentence ("… hier. eine Nachricht").
+      merged = prevCore + windowText.slice(k);
       isSameUtterance = true;
     } else {
       // No meaningful overlap → a genuinely new utterance.
