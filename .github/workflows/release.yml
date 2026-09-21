@@ -46,6 +46,11 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.exists == 'false'
+        with:
+          node-version: '20'
+
       # A syntax error would ship a completely dead extension: Chrome silently
       # refuses to load the file and the user sees no captions at all.
       - name: Syntax-check the extension sources
@@ -57,6 +62,13 @@ jobs:
             echo "ok  $f"
           done
           jq -e '.manifest_version == 3' manifest.json > /dev/null
+
+      # Regression tests guard against silent data loss — a participant's words
+      # vanishing from the transcript. Releasing past a failing one would ship
+      # exactly the class of bug these tests exist to catch.
+      - name: Run tests
+        if: steps.check.outputs.exists == 'false'
+        run: node --test tests/*.test.js
 
       - name: Package the extension
         if: steps.check.outputs.exists == 'false'
