@@ -162,6 +162,12 @@ function extractByPosition(container) {
       !isSentenceFragment(speaker)
     ) {
       result.set(speaker, text);
+    } else if (text.length > 0) {
+      // Dropping a block here means losing that participant's words with no
+      // trace in the transcript — the failure mode that hid lowercase display
+      // names for months. Make it visible.
+      LOG('extractByPosition: rejected block — speaker candidate',
+        JSON.stringify(speaker.slice(0, 40)), 'text', JSON.stringify(text.slice(0, 40)));
     }
   }
 
@@ -227,12 +233,27 @@ function isMeetAnnouncement(text) {
 
 /** Returns true if a string looks like a sentence fragment rather than a name. */
 function isSentenceFragment(str) {
-  // Contains common sentence-internal punctuation or lowercase connector words
+  // Contains common sentence-internal punctuation
   if (/[,;]/.test(str)) return true;
+
+  const words = str.split(/\s+/);
   // More than 4 words is probably not a name
-  if (str.split(/\s+/).length > 4) return true;
-  // Starts with lowercase (names are usually capitalized)
-  if (/^[a-zäöüß]/.test(str)) return true;
+  if (words.length > 4) return true;
+
+  // A lowercase start alone must NOT disqualify a name. Meet display names are
+  // frequently lowercase — "test", "sa", nicknames, handles — and rejecting
+  // them dropped that participant's contributions from the transcript
+  // entirely, with no trace anywhere.
+  //
+  // Only an all-lowercase multi-word string reads as running text rather than
+  // a name: "und dann sagte er". A capital somewhere keeps name particles
+  // intact ("van Dijk", "de la Cruz"). Longer German fragments carrying a
+  // capitalised noun are caught by the >4 words rule above.
+  //
+  // Deliberately permissive: a wrong speaker label is visible and correctable,
+  // a rejected block loses that person's words without any sign of it.
+  if (words.length >= 3 && /^\p{Ll}/u.test(str) && !/\p{Lu}/u.test(str)) return true;
+
   return false;
 }
 

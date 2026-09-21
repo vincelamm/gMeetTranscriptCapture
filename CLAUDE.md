@@ -6,6 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Chrome Extension (Manifest V3) that captures Google Meet live captions and saves them as a timestamped transcript with speaker names. No build step — pure vanilla JS loaded directly by Chrome.
 
+## Tests
+
+```bash
+node --test tests/*.test.js
+```
+
+No dependencies and no build step: `tests/load-content-script.js` evaluates the real `content.js` inside a `node:vm` context with stubbed browser globals, so the tests exercise the shipped file rather than a copy of its logic. Its top-level `function` declarations land on the context and are called directly.
+
+`.github/workflows/test.yml` runs this on every push and pull request.
+
+**What belongs here.** This extension's worst failure mode is silent data loss — a participant's words missing from the transcript with nothing in the UI, the file or the log to indicate anything was discarded. Every heuristic that can *reject* caption content needs a regression test with realistic inputs. `tests/speaker-names.test.js` covers the 2026-09-21 incident, where a guest whose display name was `test` was never recorded because `isSentenceFragment()` rejected any lowercase speaker label.
+
+When adding such a test, verify it actually fails against the broken version — a regression test that passes either way protects nothing.
+
 ## Loading the extension
 
 1. Open `chrome://extensions`
