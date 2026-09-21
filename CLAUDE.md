@@ -20,6 +20,18 @@ No dependencies and no build step: `tests/load-content-script.js` evaluates the 
 
 When adding such a test, verify it actually fails against the broken version — a regression test that passes either way protects nothing.
 
+## Releasing
+
+`.github/workflows/release.yml` watches `manifest.json` on `main`. When the version there changes, it syntax-checks the sources, packages the extension and creates the tag **and** the GitHub Release.
+
+The release, not the tag, is what matters: `popup.js` polls `GET /repos/{repo}/releases/latest` for its update notice, so a tag on its own never reaches users. That is how v1.4.12–v1.4.16 stayed invisible to everyone running the extension.
+
+- Bump `manifest.json` in the same commit/PR as the change — that bump *is* the release trigger.
+- Re-running is safe: an existing tag makes the job skip.
+- `workflow_dispatch` allows a manual re-run after a failed release.
+- The zip contains only what Chrome loads — no `tickets/`, `CLAUDE.md`, workflows or `generate-icons.py`.
+- The tests run before anything is tagged, so a failing regression test blocks the release rather than shipping past it.
+
 ## Loading the extension
 
 1. Open `chrome://extensions`
