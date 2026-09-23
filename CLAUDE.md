@@ -12,13 +12,20 @@ A Chrome Extension (Manifest V3) that captures Google Meet live captions and sav
 node --test tests/*.test.js
 ```
 
-No dependencies and no build step: `tests/load-content-script.js` evaluates the real `content.js` inside a `node:vm` context with stubbed browser globals, so the tests exercise the shipped file rather than a copy of its logic. Its top-level `function` declarations land on the context and are called directly.
+No dependencies and no build step. Two levels, and prefer the first:
+
+1. **`require('../utils/caption-core.js')`** — caption parsing and classification touch neither the DOM nor `chrome.*`, so most tests need no sandbox at all. `caption-core.js` ends with a `typeof module !== 'undefined'` export block that the browser skips. Put new logic here whenever it can be expressed as arguments in, values out.
+2. **`tests/load-content-script.js`** — for anything genuinely bound to capture state (the debounce/dedup machine, the port). It evaluates the real content scripts, in manifest order, into one `node:vm` context with stubbed browser globals, and hands the test a controllable clock (`clock.advance(ms)` drives the 800 ms debounce and the 12 s expiry) plus a recording port (`port.captions()`).
+
+`utils/caption-core.js` is loaded as the **first** content script so `content.js` can use its declarations — classic content scripts share one global scope, and ES modules are not available for content scripts declared in the manifest. Adding a second `const` of the same name in `content.js` is a redeclaration error at load time.
 
 `.github/workflows/test.yml` runs this on every push and pull request.
 
 **What belongs here.** This extension's worst failure mode is silent data loss — a participant's words missing from the transcript with nothing in the UI, the file or the log to indicate anything was discarded. Every heuristic that can *reject* caption content needs a regression test with realistic inputs. `tests/speaker-names.test.js` covers the 2026-09-21 incident, where a guest whose display name was `test` was never recorded because `isSentenceFragment()` rejected any lowercase speaker label.
 
 When adding such a test, verify it actually fails against the broken version — a regression test that passes either way protects nothing.
+
+`tests/caption-dedup.test.js` holds characterization tests: they pin what the pipeline does **today**, including two cases marked `KNOWN GAP` whose current behaviour is undesirable (trailing punctuation splitting a sentence; a short utterance swallowed by the containment check). Both were fixed in v1.4.16/v1.4.17 and reverted in v1.4.18 when capture stopped entirely — a still unexplained outage. When those fixes return, the KNOWN GAP tests must fail: that is the signal, so update them rather than deleting them.
 
 ## Releasing
 
@@ -45,7 +52,8 @@ After any code change, click the reload icon on the extension card in `chrome://
 ```
 manifest.json         # MV3 manifest — wires all components together
 background.js         # Service worker: state management, download trigger
-content.js            # Injected into meet.google.com: DOM observer + caption parser + meeting info scraper
+utils/caption-core.js # Caption parsing/classification — no DOM, no chrome.*; loaded BEFORE content.js
+content.js            # Injected into meet.google.com: DOM observer + meeting info scraper + capture state
 utils/formatter.js    # ES module: formats CaptionLine[] into .txt, .md, or AI prompt
 popup/
   popup.html          # Extension popup UI

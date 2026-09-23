@@ -1,23 +1,34 @@
 {
   "manifest_version": 3,
   "name": "Meet Transcript Capture",
-  "version": "1.4.19",
+  "version": "1.4.20",
   "description": "Captures Google Meet live captions as a timestamped transcript with speaker names.",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "permissions": ["storage", "downloads"],
-  "host_permissions": ["https://meet.google.com/*", "https://api.github.com/*"],
+  "permissions": [
+    "storage",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "https://api.github.com/*"
+  ],
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["https://meet.google.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://meet.google.com/*"
+      ],
+      "js": [
+        "utils/caption-core.js",
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],

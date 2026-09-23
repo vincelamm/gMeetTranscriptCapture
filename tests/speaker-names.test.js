@@ -8,14 +8,15 @@
  * blocks entirely. Nothing in the transcript, the popup or the log indicated
  * that anything had been discarded.
  *
- * Run with:  node --test tests/
+ * Run with:  node --test tests/*.test.js
  */
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { loadContentScript } = require('./load-content-script.js');
-
-const { meet } = loadContentScript();
+// Plain require — caption-core.js touches neither the DOM nor chrome.*, so
+// this test needs no sandbox and no browser stubs. That is the whole reason
+// the parsing logic lives in its own file.
+const meet = require('../utils/caption-core.js');
 
 // ---------------------------------------------------------------------------
 // Fake DOM — only what extractByPosition actually touches.

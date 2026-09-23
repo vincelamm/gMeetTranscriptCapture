@@ -18,7 +18,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const CONTENT_SCRIPT = path.join(__dirname, '..', 'content.js');
+// The same files, in the same order, as manifest.json content_scripts.js —
+// classic content scripts share one global scope, and the sandbox reproduces
+// that by evaluating them into one vm context.
+const CONTENT_SCRIPTS = [
+  path.join(__dirname, '..', 'utils', 'caption-core.js'),
+  path.join(__dirname, '..', 'content.js'),
+];
 
 /**
  * Controllable time: `now` drives Date.now(), and scheduled callbacks only run
@@ -131,9 +137,12 @@ function browserStubs(clock, port) {
 function loadContentScript() {
   const clock = createClock();
   const port = createRecordingPort();
-  const source = fs.readFileSync(CONTENT_SCRIPT, 'utf8');
   const meet = vm.createContext(browserStubs(clock, port));
-  vm.runInContext(source, meet, { filename: 'content.js' });
+  // `module` stays undefined here, so caption-core.js skips its CommonJS
+  // export block exactly as it does in the browser.
+  for (const file of CONTENT_SCRIPTS) {
+    vm.runInContext(fs.readFileSync(file, 'utf8'), meet, { filename: path.basename(file) });
+  }
   return { meet, clock, port };
 }
 
