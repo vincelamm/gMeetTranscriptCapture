@@ -15,7 +15,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { loadContentScript } = require('./load-content-script.js');
 
-const meet = loadContentScript();
+const { meet } = loadContentScript();
 
 // ---------------------------------------------------------------------------
 // Fake DOM — only what extractByPosition actually touches.
