@@ -31,7 +31,7 @@ function formatDate(ts) {
 
 /**
  * Build a filename for the transcript download, using LOCAL time so it matches
- * the "Start:" field in the transcript header (which is also local time).
+ * the "Inicio:" field in the transcript header (which is also local time).
  * Example: meet-transcript-2026-03-19T14-32-00.txt
  */
 export function buildFilename(startTime, format = 'txt') {
@@ -81,33 +81,34 @@ function buildMeetingInfoBlock(meetingInfo, format, fallbackParticipants = []) {
     if (!value) return;
     rows.push(format === 'md' ? `**${label}:** ${value}` : `${label}: ${value}`);
   };
-  field('Terminzeit', meetingInfo?.scheduledTime);
-  field('Organisator*in', meetingInfo?.organizer);
-  field('Protokollführung', meetingInfo?.localUser);
+  field('Fecha y hora programadas', meetingInfo?.scheduledTime);
+  field('Organizador', meetingInfo?.organizer);
+  field('Transcripción realizada por', meetingInfo?.localUser);
   const participants = meetingInfo?.participants?.length > 0
     ? meetingInfo.participants
     : fallbackParticipants;
-  if (participants.length > 0) field('Teilnehmende', participants.join(', '));
-  field('Beschreibung', meetingInfo?.description);
-  field('Meeting-Link', meetingInfo?.meetUrl);
-  field('Einwahl', meetingInfo?.dialIn);
+  if (participants.length > 0) field('Participantes', participants.join(', '));
+  field('Descripción', meetingInfo?.description);
+  field('Enlace de la reunión', meetingInfo?.meetUrl);
+  field('Número de acceso telefónico', meetingInfo?.dialIn);
   return rows;
 }
 
 /**
  * Format an array of CaptionLines into a plain-text transcript.
+ * Optional endTime preserves raw transcript duration after export-only cleanup.
  */
-export function formatTxt(lines, meetingTitle, startTime, meetingInfo = null) {
-  const endTime = lines.length > 0 ? lines[lines.length - 1].timestamp : startTime;
+export function formatTxt(lines, meetingTitle, startTime, meetingInfo = null,
+  endTime = lines.length > 0 ? lines[lines.length - 1].timestamp : startTime) {
   const duration = formatDuration(endTime - startTime);
   const divider = '─'.repeat(50);
   const localUser = meetingInfo?.localUser;
   const fallback = speakersFromLines(lines, localUser);
 
   const headerLines = [
-    `Meeting: ${meetingTitle || 'Google Meet'}`,
-    `Start: ${formatDate(startTime)}`,
-    `Dauer: ${duration}`,
+    `Reunión: ${meetingTitle || 'Google Meet'}`,
+    `Inicio: ${formatDate(startTime)}`,
+    `Duración: ${duration}`,
     ...buildMeetingInfoBlock(meetingInfo, 'txt', fallback),
     divider,
     '',
@@ -120,22 +121,23 @@ export function formatTxt(lines, meetingTitle, startTime, meetingInfo = null) {
     })
     .join('\n');
 
-  return headerLines.join('\n') + body + [divider, 'Ende des Transkripts'].join('\n');
+  return headerLines.join('\n') + body + [divider, 'Fin de la transcripción'].join('\n');
 }
 
 /**
  * Format an array of CaptionLines into a Markdown transcript.
+ * Optional endTime preserves raw transcript duration after export-only cleanup.
  */
-export function formatMd(lines, meetingTitle, startTime, meetingInfo = null) {
-  const endTime = lines.length > 0 ? lines[lines.length - 1].timestamp : startTime;
+export function formatMd(lines, meetingTitle, startTime, meetingInfo = null,
+  endTime = lines.length > 0 ? lines[lines.length - 1].timestamp : startTime) {
   const duration = formatDuration(endTime - startTime);
   const localUser = meetingInfo?.localUser;
   const fallback = speakersFromLines(lines, localUser);
 
   const headerLines = [
-    `# Meeting-Transkript: ${meetingTitle || 'Google Meet'}`,
-    `**Start:** ${formatDate(startTime)}  `,
-    `**Dauer:** ${duration}`,
+    `# Transcripción de la reunión: ${meetingTitle || 'Google Meet'}`,
+    `**Inicio:** ${formatDate(startTime)}  `,
+    `**Duración:** ${duration}`,
     ...buildMeetingInfoBlock(meetingInfo, 'md', fallback).map(l => `${l}  `),
     '',
     '---',
@@ -153,29 +155,29 @@ export function formatMd(lines, meetingTitle, startTime, meetingInfo = null) {
 }
 
 /**
- * Wrap transcript in an AI prompt for generating meeting minutes (Protokoll).
+ * Wrap transcript in a Spanish AI prompt for generating meeting minutes.
  */
 export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = null) {
   const endTime = lines.length > 0 ? lines[lines.length - 1].timestamp : startTime;
   const duration = formatDuration(endTime - startTime);
   const localUser = meetingInfo?.localUser;
-  const ph = '[PLATZHALTER]';
+  const ph = '[POR COMPLETAR]';
 
-  // Teilnehmende: always derived from who actually spoke in the transcript
+  // Participants: always derived from who actually spoke in the transcript
   const participants = speakersFromLines(lines, localUser);
 
-  const rahmendaten = [
-    `- Gremium/Runde: ${meetingTitle || ph}`,
-    `- Datum: ${meetingInfo?.scheduledTime || formatDate(startTime)}`,
-    `- Format: Online (Google Meet)`,
-    `- Teilnehmende: ${participants.length > 0 ? participants.join(', ') : ph}`,
-    `- Protokollführung: ${localUser || ph}`,
+  const meetingDetails = [
+    `- Reunión: ${meetingTitle || ph}`,
+    `- Fecha: ${meetingInfo?.scheduledTime || formatDate(startTime)}`,
+    `- Formato: En línea (Google Meet)`,
+    `- Participantes: ${participants.length > 0 ? participants.join(', ') : ph}`,
+    `- Transcripción realizada por: ${localUser || ph}`,
   ];
-  if (meetingInfo?.organizer) rahmendaten.push(`- Organisator*in: ${meetingInfo.organizer}`);
-  if (meetingInfo?.description) rahmendaten.push(`- Agenda/Beschreibung: ${meetingInfo.description.trim()}`);
+  if (meetingInfo?.organizer) meetingDetails.push(`- Organizador: ${meetingInfo.organizer}`);
+  if (meetingInfo?.description) meetingDetails.push(`- Agenda/Descripción: ${meetingInfo.description.trim()}`);
 
   const localUserNote = localUser
-    ? `Hinweis: Im Transkript steht „${localUser}" für die protokollführende Person.`
+    ? `Nota: En la transcripción, «${localUser}» identifica a la persona que realiza la transcripción.`
     : '';
 
   const transcriptBody = lines
@@ -187,58 +189,58 @@ export function formatAIPrompt(lines, meetingTitle, startTime, meetingInfo = nul
 
   // Build the interactive clarification block
   const missingFields = [];
-  if (!meetingTitle) missingFields.push('Gremium/Runde (Name des Arbeitskreises o. Ä.)');
-  if (!localUser)    missingFields.push('Protokollführung (Name der protokollierenden Person)');
+  if (!meetingTitle) missingFields.push('Reunión (nombre de la reunión o del grupo de trabajo)');
+  if (!localUser)    missingFields.push('Transcripción realizada por (nombre de la persona)');
 
   const participantLine = participants.length > 0
-    ? `Aus dem Transkript erkannte Teilnehmende: **${participants.join(', ')}**`
-    : 'Aus dem Transkript konnten keine Teilnehmenden erkannt werden.';
+    ? `Participantes identificados en la transcripción: **${participants.join(', ')}**`
+    : 'No se pudieron identificar participantes en la transcripción.';
 
   const clarificationBlock = [
-    '## Vor dem Schreiben: Bitte stelle diese Fragen',
+    '## Antes de redactar: plantea estas preguntas',
     '',
-    'Stelle mir **alle folgenden Fragen in einer einzigen Nachricht** und warte auf meine Antwort, bevor du das Protokoll erstellst:',
+    'Hazme **todas las siguientes preguntas en un único mensaje** y espera mi respuesta antes de redactar el acta:',
     '',
     ...(missingFields.length > 0 ? [
-      '**Fehlende Rahmendaten:**',
-      ...missingFields.map(f => `- ${f}?`),
+      '**Datos de la reunión pendientes:**',
+      ...missingFields.map(f => `- ¿${f}?`),
       '',
     ] : []),
-    `**Teilnehmende:** ${participantLine}`,
-    '- Ist diese Liste vollständig? Falls nicht: wer fehlt oder war nicht anwesend?',
+    `**Participantes:** ${participantLine}`,
+    '- ¿La lista está completa? Si no, ¿quién falta o no estuvo presente?',
     '',
-    'Erst nach meiner Antwort erstellst du das Protokoll.',
+    'Redacta el acta solo después de recibir mi respuesta.',
   ];
 
   return [
-    'Du bist eine erfahrene Protokollant*in. Erstelle aus dem folgenden Meeting-Transkript ein professionelles Ergebnisprotokoll.',
+    'Eres una persona con experiencia en la redacción de actas. Elabora un acta profesional de resultados a partir de la siguiente transcripción de una reunión.',
     ...(localUserNote ? ['', localUserNote] : []),
     '',
-    '## Rahmendaten',
+    '## Datos de la reunión',
     '',
-    ...rahmendaten,
+    ...meetingDetails,
     '',
     ...clarificationBlock,
     '',
-    '## Anforderungen an das Protokoll',
+    '## Requisitos del acta',
     '',
-    '1. **Struktur:** Kopf mit Rahmendaten, danach Gliederung nach Tagesordnungspunkten bzw. thematischen Blöcken.',
-    '2. **Stil:** Sachlich, neutral, im Präsens oder Konjunktiv der indirekten Rede. Keine wörtlichen Zitate, außer bei formalen Anträgen oder Beschlüssen.',
-    '3. **Inhalt pro Themenblock:** Kurze Zusammenfassung der Diskussion, unterschiedliche Positionen (ohne Wertung), gefasste Beschlüsse mit Abstimmungsergebnis (falls vorhanden), offene Punkte.',
-    '4. **Am Ende:** Übersicht aller Aufgaben/To-dos mit Verantwortlichen und Fristen sowie ggf. der nächste Termin.',
+    '1. **Estructura:** Encabezado con los datos de la reunión, seguido de los puntos de la agenda o bloques temáticos.',
+    '2. **Estilo:** Objetivo y neutral, en presente o mediante discurso indirecto. Evita las citas textuales, salvo en propuestas formales o acuerdos.',
+    '3. **Contenido por bloque:** Resumen breve de la discusión, distintas posiciones sin valoraciones, acuerdos adoptados con resultados de votación si existen y asuntos pendientes.',
+    '4. **Al final:** Lista de tareas con responsables y plazos, y la fecha de la próxima reunión si se conoce.',
     '',
-    '## Wichtige Filterregeln',
+    '## Reglas de selección del contenido',
     '',
-    '- Nimm ausschließlich fachlich und organisatorisch relevante Inhalte auf.',
-    '- Lasse private Themen, Smalltalk, persönliche Anekdoten, gesundheitliche oder familiäre Erwähnungen sowie Äußerungen ohne Bezug zur Sitzung vollständig weg.',
-    '- Lasse emotionale Zuspitzungen oder persönliche Angriffe weg; gib nur den sachlichen Kern einer kontroversen Diskussion wieder.',
-    '- Wenn unklar ist, ob eine Passage relevant ist, liste sie am Ende unter „Zur Prüfung durch Protokollführung" auf, statt sie ins Protokoll aufzunehmen.',
+    '- Incluye únicamente contenido técnico y organizativo relevante para la reunión.',
+    '- Omite temas privados, conversaciones informales, anécdotas personales, referencias a la salud o a la familia y comentarios ajenos a la reunión.',
+    '- Omite las exageraciones emocionales y los ataques personales; recoge solo el contenido objetivo de las discusiones controvertidas.',
+    '- Si no está claro si un pasaje es relevante, colócalo al final en «Para revisión de la persona que realizó la transcripción», en lugar de incluirlo en el acta.',
     '',
     '---',
     '',
-    `Aufzeichnungsbeginn: ${formatDate(startTime)} · Dauer: ${duration}`,
+    `Inicio de la transcripción: ${formatDate(startTime)} · Duración: ${duration}`,
     '',
-    'TRANSKRIPT:',
+    'TRANSCRIPCIÓN:',
     '',
     transcriptBody,
     '',

@@ -107,6 +107,7 @@ function browserStubs(clock, port) {
 
   return {
     console,
+    crypto: require('node:crypto').webcrypto,
     JSON, Math, Map, Set, RegExp, Promise, Object, Array, String, Number, Error,
     Date: DateStub,
     setTimeout: (fn, ms) => clock.setTimeout(fn, ms),
@@ -120,7 +121,7 @@ function browserStubs(clock, port) {
     KeyboardEvent: class { constructor(type, init) { Object.assign(this, { type }, init); } },
     chrome: {
       runtime: {
-        onMessage: { addListener: noop },
+        onMessage: { listeners: [], addListener(fn) { this.listeners.push(fn); } },
         sendMessage: () => Promise.resolve({}),
         connect: () => port,
       },

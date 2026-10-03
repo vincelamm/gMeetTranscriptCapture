@@ -585,9 +585,11 @@ function extractParticipantsFromPeoplePanel(info) {
 }
 
 // ---------------------------------------------------------------------------
-// Port to background (keeps the MV3 service worker alive during capture)
+// Port to background (message delivery; an idle port does not keep MV3 alive)
 // ---------------------------------------------------------------------------
 let bgPort = null;
+// Synchronous flush replies carry pending lines without racing port shutdown.
+let captionReplyBuffer = null;
 
 function openPort() {
   if (bgPort) return;
@@ -614,10 +616,12 @@ function closePort() {
   LOG('Port to background closed');
 }
 
-function sendCaption(speaker, text, timestamp, replaceLastLine = false) {
-  if (bgPort) {
+function sendCaption(speaker, text, timestamp, replaceLastLine = false, utteranceId) {
+  if (bgPort || captionReplyBuffer) {
     linesCommitted++;
-    bgPort.postMessage({ type: 'CAPTION_LINE', speaker, text, timestamp, replaceLastLine });
+    const message = { type: 'CAPTION_LINE', speaker, text, timestamp, replaceLastLine, utteranceId };
+    if (captionReplyBuffer) captionReplyBuffer.push(message);
+    else bgPort.postMessage(message);
     // Enable unload guard on first actual caption data
     if (!hasUnsavedTranscript) enableUnloadGuard();
   }
@@ -638,8 +642,12 @@ const speakerBuffers = new Map();
 // currently shown in the transcript). Used both for deduplication and as the
 // base for overlap-merging Meet's rolling caption window.
 const lastCommitted = new Map();
-// Timestamp of each speaker's last commit (to expire stale utterance context)
-const utteranceTimes = new Map();
+// Last CHANGED DOM window per speaker. Unchanged text can remain visible during
+// silence; seeing it again must neither extend a turn nor emit another line.
+const lastObserved = new Map();
+// UUIDs are local metadata, never exported. A fresh turn (including a new
+// capture after stop) receives a fresh identity, even across page executions.
+const utteranceIds = new Map();
 
 /**
  * Lazy localUser detection: called the first time "You" appears as a caption
@@ -667,24 +675,41 @@ const DEBOUNCE_MS = 800;
 function processCaptionUpdate(currentSpeakers) {
   if (isCaptureSuppressed()) return; // the extension is operating Meet's UI right now
   for (const [speaker, text] of currentSpeakers) {
+    const observed = lastObserved.get(speaker);
+    if (observed?.text === text) continue;
+    const now = Date.now();
     const buf = speakerBuffers.get(speaker);
-
-    // Ignore if text hasn't changed
-    if (buf && buf.pendingText === text) continue;
-
-    // If new text STARTS WITH the pending text, it's just growing — update buffer,
-    // reset debounce, don't commit yet.
     if (buf) clearTimeout(buf.timer);
 
+    const expired = observed && now - observed.at > UTTERANCE_EXPIRY_MS;
+    let pendingText = text;
+    if (buf) {
+      const relation = compareCaptionWindows(buf.pendingText, text);
+      if (expired || !relation.sameUtterance) {
+        // Never overwrite an unrelated pending phrase before its debounce.
+        commitLine(speaker);
+      } else {
+        pendingText = relation.text;
+      }
+    }
+    if (expired) {
+      lastCommitted.delete(speaker);
+      utteranceIds.delete(speaker);
+    }
+
     const timer = setTimeout(() => commitLine(speaker), DEBOUNCE_MS);
-    speakerBuffers.set(speaker, { pendingText: text, timer });
+    speakerBuffers.set(speaker, { pendingText, timer });
+    lastObserved.set(speaker, { text, at: now });
   }
 
-  // Commit speakers who have left the DOM
-  for (const [speaker, buf] of speakerBuffers) {
+  // Observed disappearance closes the turn. This also preserves an identical
+  // short reply when the same speaker returns, instead of treating it as noise.
+  for (const speaker of lastObserved.keys()) {
     if (!currentSpeakers.has(speaker)) {
-      clearTimeout(buf.timer);
       commitLine(speaker);
+      lastObserved.delete(speaker);
+      lastCommitted.delete(speaker);
+      utteranceIds.delete(speaker);
     }
   }
 }
@@ -694,53 +719,27 @@ function commitLine(speaker) {
   const buf = speakerBuffers.get(speaker);
   if (!buf) return;
 
+  clearTimeout(buf.timer);
   const windowText = buf.pendingText.trim();
   speakerBuffers.delete(speaker);
   if (!windowText) return;
 
   const now = Date.now();
   const prev = lastCommitted.get(speaker) || '';
-  const lastCommitTime = utteranceTimes.get(speaker) || 0;
-  const expired = (now - lastCommitTime) > UTTERANCE_EXPIRY_MS;
 
   // Determine how the new caption-window text relates to the text already
   // committed for this speaker's active utterance, and merge accordingly.
   // Google Meet shows a rolling ~2–3 line window: as someone keeps talking the
   // start scrolls out of view, so window text neither strictly grows nor stays
   // prefix-stable. We reconstruct the full utterance via suffix/prefix overlap.
-  let merged;
-  let isSameUtterance;
-
-  if (!prev || expired) {
-    // Nothing to continue (or too much silence) — start a fresh line.
-    merged = windowText;
-    isSameUtterance = false;
-  } else if (windowText === prev) {
-    return; // unchanged
-  } else if (windowText.startsWith(prev)) {
-    // Window grew while the start is still visible — same utterance, longer.
-    merged = windowText;
-    isSameUtterance = true;
-  } else if (prev.startsWith(windowText) || prev.includes(windowText)) {
-    // New window is a shorter prefix / already-contained revision — keep prev.
-    return;
-  } else {
-    const k = overlapLength(prev, windowText);
-    if (k >= MIN_OVERLAP_CHARS) {
-      // Rolling window scrolled: stitch the non-overlapping tail onto prev.
-      merged = prev + windowText.slice(k);
-      isSameUtterance = true;
-    } else {
-      // No meaningful overlap → a genuinely new utterance.
-      merged = windowText;
-      isSameUtterance = false;
-    }
-  }
+  const { text: merged, sameUtterance: isSameUtterance } = compareCaptionWindows(prev, windowText);
 
   if (isSameUtterance && merged === prev) return;
 
+  const utteranceId = isSameUtterance && utteranceIds.has(speaker)
+    ? utteranceIds.get(speaker) : crypto.randomUUID();
+  utteranceIds.set(speaker, utteranceId);
   lastCommitted.set(speaker, merged);
-  utteranceTimes.set(speaker, now);
 
   const textToSend = merged.trim();
   if (!textToSend) return;
@@ -752,7 +751,7 @@ function commitLine(speaker) {
   }
 
   LOG(`COMMIT [${speaker}] (${isSameUtterance ? 'replace' : 'new'}): ${textToSend.slice(0, 80)}`);
-  sendCaption(speaker === '(speaker)' ? '' : speaker, textToSend, now, isSameUtterance);
+  sendCaption(speaker === '(speaker)' ? '' : speaker, textToSend, now, isSameUtterance, utteranceId);
 }
 
 // ---------------------------------------------------------------------------
@@ -765,7 +764,7 @@ function startObserver(strategy, container) {
     // Re-acquire the container in case Meet re-rendered it
     const liveContainer = strategy.findContainer() || container;
     const current = strategy.extractSpeakers(liveContainer);
-    if (current.size > 0) processCaptionUpdate(current);
+    processCaptionUpdate(current);
   });
 
   observer.observe(container, { childList: true, subtree: true, characterData: true });
@@ -784,6 +783,20 @@ function stopObserver() {
     clearTimeout(buf.timer);
     commitLine(speaker);
   }
+}
+
+/** Commit synchronously into a reply so background receives the final buffer
+ * even when its port listener has already stopped accepting capture messages. */
+function collectCaptionFlush(stop = false) {
+  const captions = [];
+  captionReplyBuffer = captions;
+  try {
+    if (stop) stopObserver();
+    else for (const speaker of speakerBuffers.keys()) commitLine(speaker);
+  } finally {
+    captionReplyBuffer = null;
+  }
+  return captions;
 }
 
 // ---------------------------------------------------------------------------
@@ -1216,7 +1229,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     linesCommitted = 0;
     speakerBuffers.clear();
     lastCommitted.clear();
-    utteranceTimes.clear();
+    lastObserved.clear();
+    utteranceIds.clear();
     activeStrategy = null;
     openPort();
 
@@ -1246,12 +1260,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   if (msg.type === 'STOP_CAPTURE') {
     isCapturing = false;
-    stopObserver();
+    const captions = collectCaptionFlush(true);
     stopScan();
     closePort();
     // Keep unload guard active — transcript still needs to be downloaded
     INFO('Capture stopped');
-    sendResponse({ status: 'ok' });
+    sendResponse({ status: 'ok', captions });
+  }
+
+  if (msg.type === 'FLUSH_CAPTIONS') {
+    sendResponse({ status: 'ok', captions: collectCaptionFlush() });
   }
 
   if (msg.type === 'TRANSCRIPT_DOWNLOADED' || msg.type === 'TRANSCRIPT_CLEARED') {

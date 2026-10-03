@@ -18,6 +18,7 @@
  */
 
 import { formatTxt, formatMd, formatAIPrompt, buildFilename } from './utils/formatter.js';
+import { cleanTranscriptForExport } from './utils/transcript-cleanup.js';
 
 // ---------------------------------------------------------------------------
 // State: in-memory cache + batched persistence
@@ -90,7 +91,8 @@ async function patchState(patch, { immediate = false } = {}) {
 
 // ---------------------------------------------------------------------------
 // Port connections
-// content-script port: keeps the SW alive during capture, receives CAPTION_LINE
+// content-script port: receives CAPTION_LINE; messages reset the MV3 idle timer,
+// but merely holding the port open does not prevent service-worker suspension.
 // popup port: pushes live line count updates to the popup
 // ---------------------------------------------------------------------------
 const popupPorts = new Set();
@@ -139,10 +141,15 @@ chrome.runtime.onConnect.addListener((port) => {
  * Mutates `state.lines` directly (the cache is the single source of truth).
  */
 function appendCaptionLine(state, msg) {
+  const identity = typeof msg.utteranceId === 'string' && msg.utteranceId.trim()
+    ? { utteranceId: msg.utteranceId } : {};
   if (msg.replaceLastLine && state.lines.length > 0) {
     const lastIdx = state.lines.map((l) => l.speaker).lastIndexOf(msg.speaker);
-    if (lastIdx !== -1) {
+    const previousIdentity = state.lines[lastIdx]?.utteranceId;
+    if (lastIdx !== -1 && (!identity.utteranceId ||
+        (previousIdentity && identity.utteranceId === previousIdentity))) {
       state.lines[lastIdx] = {
+        ...identity,
         speaker: msg.speaker,
         text: msg.text,
         timestamp: state.lines[lastIdx].timestamp,
@@ -150,7 +157,29 @@ function appendCaptionLine(state, msg) {
       return;
     }
   }
-  state.lines.push({ speaker: msg.speaker, text: msg.text, timestamp: msg.timestamp });
+  state.lines.push({ speaker: msg.speaker, text: msg.text, timestamp: msg.timestamp, ...identity });
+}
+
+/** Append only a reply belonging to the same capture array. A new start or
+ * discard can run while tabs.sendMessage is pending; never restore old text. */
+function appendFlushedCaptions(state, response, captureLines) {
+  if (state.lines !== captureLines || !Array.isArray(response?.captions)) return;
+  let received = false;
+  for (const caption of response.captions) {
+    if (caption?.type !== 'CAPTION_LINE' || typeof caption.speaker !== 'string' ||
+        typeof caption.text !== 'string' || !caption.text.trim() ||
+        !Number.isFinite(caption.timestamp)) continue;
+    appendCaptionLine(state, caption);
+    received = true;
+  }
+  if (received) {
+    if (state.isCapturing) {
+      state.capturePhase = 'capturing';
+      state.ccWarning = false;
+    }
+    broadcastToPopup({ type: 'LINE_ADDED', lineCount: state.lines.length });
+    scheduleBadgeUpdate();
+  }
 }
 
 function broadcastToPopup(msg) {
@@ -169,7 +198,7 @@ function broadcastToPopup(msg) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   handleMessage(msg, sender).then(sendResponse).catch((err) => {
     console.error('[MeetTranscript] background error:', err);
-    sendResponse({ error: err.message });
+    sendResponse({ error: 'No se pudo completar la operación. Inténtalo de nuevo.' });
   });
   return true; // keep channel open
 });
@@ -178,7 +207,7 @@ async function handleMessage(msg, sender) {
   switch (msg.type) {
     case 'START_CAPTURE': {
       const tab = await getActiveTab();
-      if (!tab) return { error: 'No active Meet tab found.' };
+      if (!tab) return { error: 'No se encontró una pestaña activa de Google Meet.' };
 
       const title = await getMeetingTitle(tab.id);
 
@@ -205,7 +234,10 @@ async function handleMessage(msg, sender) {
       } catch {
         await patchState({ isCapturing: false, capturePhase: 'idle' }, { immediate: true });
         await updateBadge();
-        return { error: 'Could not reach the Meet tab. Please refresh the tab and try again.' };
+        return {
+          errorCode: 'MEET_TAB_UNREACHABLE',
+          error: 'No se pudo conectar con la pestaña de Meet. Recárgala e inténtalo de nuevo.',
+        };
       }
     }
 
@@ -213,16 +245,19 @@ async function handleMessage(msg, sender) {
       const state = await ensureState();
       if (!state.isCapturing) return { status: 'not_capturing' };
 
+      const captureLines = state.lines;
       await patchState({ isCapturing: false, capturePhase: 'idle', ccWarning: false }, { immediate: true });
-      await updateBadge();
 
       if (state.tabId) {
         try {
-          await chrome.tabs.sendMessage(state.tabId, { type: 'STOP_CAPTURE' });
+          const response = await chrome.tabs.sendMessage(state.tabId, { type: 'STOP_CAPTURE' });
+          appendFlushedCaptions(state, response, captureLines);
         } catch {
           // Tab may have been closed
         }
       }
+      await flushNow();
+      await updateBadge();
       return { status: 'ok', lineCount: state.lines.length };
     }
 
@@ -237,23 +272,37 @@ async function handleMessage(msg, sender) {
 
     case 'GET_TRANSCRIPT_CONTENT': {
       const state = await ensureState();
-      if (state.lines.length === 0) return { error: 'No lines captured yet.' };
+      if (state.lines.length === 0) return { error: 'Todavía no hay intervenciones capturadas.' };
       const content = formatAIPrompt(state.lines, state.meetingTitle, state.startTime, state.meetingInfo);
       return { status: 'ok', content };
     }
 
     case 'DOWNLOAD_TRANSCRIPT': {
       const state = await ensureState();
-      if (state.lines.length === 0) return { error: 'No lines captured yet.' };
+      if (state.isCapturing && state.tabId) {
+        const captureLines = state.lines;
+        try {
+          const response = await chrome.tabs.sendMessage(state.tabId, { type: 'FLUSH_CAPTIONS' });
+          appendFlushedCaptions(state, response, captureLines);
+        } catch {
+          // Closed/unreachable tab: the already stored transcript is exportable.
+        }
+      }
+      if (state.lines.length === 0) return { error: 'Todavía no hay intervenciones capturadas.' };
 
       // Persist the latest state before handing a copy to the download.
       await flushNow();
 
       const format = msg.format || 'txt';
+      // Cleanup is an export-only snapshot. Preserve the raw end time: merging
+      // revisions retains the first timestamp and must not shorten duration.
+      const snapshot = state.lines.map(line => ({ ...line }));
+      const endTime = snapshot[snapshot.length - 1]?.timestamp ?? state.startTime;
+      const exportLines = cleanTranscriptForExport(snapshot);
       const content =
         format === 'md'
-          ? formatMd(state.lines, state.meetingTitle, state.startTime, state.meetingInfo)
-          : formatTxt(state.lines, state.meetingTitle, state.startTime, state.meetingInfo);
+          ? formatMd(exportLines, state.meetingTitle, state.startTime, state.meetingInfo, endTime)
+          : formatTxt(exportLines, state.meetingTitle, state.startTime, state.meetingInfo, endTime);
 
       const filename = buildFilename(state.startTime, format);
 
@@ -328,7 +377,7 @@ async function handleMessage(msg, sender) {
     }
 
     default:
-      return { error: `Unknown message type: ${msg.type}` };
+      return { error: 'Tipo de mensaje desconocido.' };
   }
 }
 

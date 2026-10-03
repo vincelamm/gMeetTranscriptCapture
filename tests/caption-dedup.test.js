@@ -1,14 +1,9 @@
 /**
  * Characterization tests for the caption deduplication state machine.
  *
- * These lock in what the code does TODAY — including behaviour that is
- * arguably wrong. That is the point: this pipeline has silently lost data
- * twice, so nothing should be refactored or "improved" without a net that
- * shows exactly what changed.
- *
- * Where current behaviour is known to be undesirable it is marked KNOWN GAP,
- * with the ticket to fix it. Those assertions are expected to be *updated*
- * when the behaviour is deliberately changed — never deleted.
+ * Existing characterization cases and regressions exercise the real shipped
+ * pipeline. The previous KNOWN GAP punctuation and short-phrase assertions now
+ * specify the corrected behavior, with conservative no-data-loss boundaries.
  *
  * Google Meet streams captions word by word and shows a rolling window: as
  * someone keeps talking the start scrolls out of view, so window text neither
@@ -127,40 +122,212 @@ test('the speakerless text-only strategy sends an empty speaker', () => {
   assert.deepStrictEqual(port.captions().map((m) => m.speaker), ['']);
 });
 
-// ---------------------------------------------------------------------------
-// KNOWN GAPS — current behaviour, deliberately pinned so a change is visible.
-// Both were fixed in v1.4.16/v1.4.17 and reverted in v1.4.18 when capture
-// stopped working; the root cause of that outage is still unexplained.
-// ---------------------------------------------------------------------------
-test('KNOWN GAP: trailing punctuation splits one sentence into several lines', () => {
-  // Meet appends a period once it considers a phrase finished and removes it
-  // again when the sentence continues. Comparisons run on raw text, so the
-  // period breaks startsWith(), includes() and the overlap calculation alike.
-  const lines = transcriptOf([
+// Regression tests for the previously documented KNOWN GAP cases.
+test('REGRESSION: trailing punctuation no longer splits one sentence', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
     { Anna: 'Wir fangen an.' },
     { Anna: 'Wir fangen an mit dem Thema.' },
-  ]);
-
-  assert.deepStrictEqual(
-    texts(lines),
-    ['Wir fangen an.', 'Wir fangen an mit dem Thema.'],
-    'If this now yields ONE line the punctuation fix is back — update this test ' +
-    'rather than deleting it.',
-  );
+  ])), ['Wir fangen an mit dem Thema.']);
 });
 
-test('KNOWN GAP: a short utterance contained in the previous line is dropped', () => {
-  // "gut" already appears inside the previous line, so the containment branch
-  // discards it even though it is a genuine new utterance.
-  const lines = transcriptOf([
-    { Anna: 'Das lief heute richtig gut' },
-    { Anna: 'gut' },
-  ]);
+test('REGRESSION: a short utterance contained in the previous line is retained', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Anna: 'Das lief heute richtig gut' }, { Anna: 'gut' },
+  ])), ['Das lief heute richtig gut', 'gut']);
+});
 
-  assert.deepStrictEqual(
-    texts(lines),
-    ['Das lief heute richtig gut'],
-    'If "gut" now appears as its own line the containment guard is back — ' +
-    'update this test rather than deleting it.',
-  );
+/** Frames use elapsed milliseconds, including the real debounce between them. */
+function transcriptAt(frames) {
+  const { meet, clock, port } = loadContentScript();
+  meet.openPort();
+  let elapsed = 0;
+  for (const { at, captions } of frames) {
+    clock.advance(at - elapsed);
+    elapsed = at;
+    meet.processCaptionUpdate(new Map(Object.entries(captions)));
+  }
+  clock.advance(DEBOUNCE_MS);
+  meet.processCaptionUpdate(new Map());
+  const lines = [];
+  for (const msg of port.captions()) {
+    const index = lines.map((line) => line.speaker).lastIndexOf(msg.speaker);
+    if (msg.replaceLastLine && index !== -1) {
+      lines[index] = { ...lines[index], text: msg.text };
+    } else {
+      lines.push({ speaker: msg.speaker, text: msg.text, timestamp: msg.timestamp });
+    }
+  }
+  return lines;
+}
+
+test('Spanish punctuation and progressive extensions retain one complete line', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'Esto funciona.' }, { Manuel: 'Esto funciona correctamente.' },
+  ])), ['Esto funciona correctamente.']);
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'Esto es una prueba' },
+    { Manuel: 'Esto es una prueba para ver si funciona' },
+    { Manuel: 'Esto es una prueba para ver si funciona correctamente.' },
+  ])), ['Esto es una prueba para ver si funciona correctamente.']);
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'Tenemos que revisar la base' },
+    { Manuel: 'Tenemos que revisar la base de producción' },
+    { Manuel: 'Tenemos que revisar la base de producción mañana.' },
+  ])), ['Tenemos que revisar la base de producción mañana.']);
+});
+
+test('Meet case and canonical Unicode revisions preserve the latest original', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'estoy hablando yo.' },
+    { Manuel: 'estoy hablando Yo estoy hablando.' },
+  ])), ['estoy hablando Yo estoy hablando.']);
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'Revisamos el café.' },
+    { Manuel: 'REVISAMOS el cafe\u0301 de producción.' },
+  ])), ['REVISAMOS el cafe\u0301 de producción.']);
+});
+
+test('normalization does not erase accents or numbers from different utterances', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'Sí' }, { Manuel: 'Si' }, { Manuel: 'Tenemos 12' }, { Manuel: 'Tenemos 13' },
+  ])), ['Sí', 'Si', 'Tenemos 12', 'Tenemos 13']);
+});
+
+test('rolling captions match normalized overlap and preserve new original text', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'Tenemos que revisar el café y la producción.' },
+    { Manuel: 'el cafe\u0301 y la PRODUCCIÓN mañana a las 10.' },
+  ])), ['Tenemos que revisar el cafe\u0301 y la PRODUCCIÓN mañana a las 10.']);
+});
+
+test('a suffix-only phrase is retained when continuation is ambiguous', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'Tenemos que revisar la base de producción mañana.' },
+    { Manuel: 'LA BASE de producción mañana.' },
+  ])), ['Tenemos que revisar la base de producción mañana.', 'LA BASE de producción mañana.']);
+});
+
+test('simultaneous speakers keep their own growing utterances', () => {
+  assert.deepStrictEqual(transcriptOf([
+    { Ana: 'Esto funciona.', Luis: 'Hola.' },
+    { Ana: 'Esto funciona correctamente.', Luis: 'Hola cómo estás.' },
+  ]), [
+    { speaker: 'Ana', text: 'Esto funciona correctamente.' },
+    { speaker: 'Luis', text: 'Hola cómo estás.' },
+  ]);
+});
+
+test('short continuation may grow but partial-word prefixes remain separate', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'Hola.' }, { Manuel: 'Hola cómo estás.' },
+  ])), ['Hola cómo estás.']);
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'hola' }, { Manuel: 'holanda' },
+  ])), ['hola', 'holanda']);
+});
+
+test('an exact short repetition after disappearing from DOM is retained', () => {
+  assert.deepStrictEqual(texts(transcriptAt([
+    { at: 0, captions: { Manuel: 'Sí.' } },
+    { at: 1000, captions: {} },
+    { at: 1800, captions: { Manuel: 'Sí.' } },
+  ])), ['Sí.', 'Sí.']);
+});
+
+test('speaker disappearance separates even a long prefix-shaped utterance', () => {
+  assert.deepStrictEqual(texts(transcriptAt([
+    { at: 0, captions: { Manuel: 'Tenemos que revisar la base.' } },
+    { at: 1000, captions: {} },
+    { at: 1800, captions: { Manuel: 'Tenemos que revisar la base de producción.' } },
+  ])), ['Tenemos que revisar la base.', 'Tenemos que revisar la base de producción.']);
+});
+
+test('a committed prefix-shaped utterance is retained even without a DOM disappearance', () => {
+  assert.deepStrictEqual(texts(transcriptAt([
+    { at: 0, captions: { Manuel: 'Tenemos que revisar la base de producción.' } },
+    { at: 1000, captions: { Manuel: 'Tenemos que revisar la base' } },
+  ])), ['Tenemos que revisar la base de producción.', 'Tenemos que revisar la base']);
+});
+
+test('an unrelated contained fragment is conservatively kept', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'Hoy hablamos del presupuesto y de los costes de producción.' },
+    { Manuel: 'del presupuesto y de los costes' },
+  ])), ['Hoy hablamos del presupuesto y de los costes de producción.', 'del presupuesto y de los costes']);
+});
+
+test('the real 13/14/15/20 second revisions produce one coherent utterance', () => {
+  const finalText = 'Esto es una prueba para ver si realmente funciona a ver, estoy hablando Yo estoy hablando a ver quiero ver cómo se muestra la transmisión y todo eso.';
+  const lines = transcriptAt([
+    { at: 13000, captions: { Manuel: 'Esto es una prueba para ver si realmente funciona.' } },
+    { at: 14000, captions: { Manuel: 'Esto es una prueba para ver si realmente funciona a ver, estoy hablando yo.' } },
+    { at: 15000, captions: { Manuel: 'Esto es una prueba para ver si realmente funciona a ver, estoy hablando Yo estoy.' } },
+    { at: 20000, captions: { Manuel: finalText } },
+  ]);
+  assert.deepStrictEqual(texts(lines), [finalText]);
+  assert.strictEqual(lines[0].timestamp, 1_700_000_000_000 + 13800);
+});
+
+test('continuous updates longer than expiry keep the active utterance', () => {
+  const frames = [{ at: 0, captions: { Manuel: 'Tenemos que revisar' } }];
+  for (let i = 0; i < 28; i++) {
+    frames.push({ at: 1000 + i * 500, captions: { Manuel: 'Tenemos que revisar ' + Array(i + 1).fill('todo').join(' ') } });
+  }
+  const lines = transcriptAt(frames);
+  assert.deepStrictEqual(texts(lines), [frames.at(-1).captions.Manuel]);
+});
+
+test('a real long pause before a growing debounce starts a new utterance', () => {
+  const frames = [{ at: 0, captions: { Manuel: 'Tenemos que revisar' } }];
+  for (let i = 0; i < 28; i++) {
+    frames.push({ at: 15000 + i * 500, captions: { Manuel: 'Tenemos que revisar ' + Array(i + 1).fill('todo').join(' ') } });
+  }
+  assert.deepStrictEqual(texts(transcriptAt(frames)), ['Tenemos que revisar', frames.at(-1).captions.Manuel]);
+});
+
+
+test('unrelated pending captions before debounce preserve both phrases', () => {
+  assert.deepStrictEqual(texts(transcriptAt([
+    { at: 0, captions: { Manuel: 'La primera frase.' } },
+    { at: 300, captions: { Manuel: 'Una idea diferente.' } },
+  ])), ['La primera frase.', 'Una idea diferente.']);
+});
+
+test('rolling captions before first debounce preserve the beginning', () => {
+  assert.deepStrictEqual(texts(transcriptAt([
+    { at: 0, captions: { Manuel: 'Tenemos que revisar la base de producción' } },
+    { at: 300, captions: { Manuel: 'la base de producción mañana.' } },
+  ])), ['Tenemos que revisar la base de producción mañana.']);
+});
+
+test('comparison preserves decimal and negative numerical meaning', () => {
+  assert.deepStrictEqual(texts(transcriptOf([
+    { Manuel: 'El resultado es -12.' }, { Manuel: 'El resultado es 12.' },
+    { Manuel: 'La versión es 1.2.' }, { Manuel: 'La versión es 12.' },
+  ])), ['El resultado es -12.', 'El resultado es 12.', 'La versión es 1.2.', 'La versión es 12.']);
+});
+
+test('the actual observer processes an empty region as a speaker boundary', () => {
+  const { meet, clock, port } = loadContentScript();
+  meet.openPort();
+  let onMutation;
+  meet.MutationObserver = class {
+    constructor(callback) { onMutation = callback; }
+    observe() {}
+    disconnect() {}
+  };
+  const container = { isConnected: true };
+  let frame = new Map([['Manuel', 'Sí.']]);
+  const strategy = { name: 'fixture', findContainer: () => container, extractSpeakers: () => frame };
+  meet.startObserver(strategy, container);
+  onMutation();
+  clock.advance(DEBOUNCE_MS);
+  frame = new Map();
+  onMutation();
+  frame = new Map([['Manuel', 'Sí.']]);
+  onMutation();
+  clock.advance(DEBOUNCE_MS);
+  assert.deepStrictEqual(port.captions().map(msg => [msg.text, msg.replaceLastLine]), [
+    ['Sí.', false], ['Sí.', false],
+  ]);
 });

@@ -29,7 +29,8 @@ const LOG = (...args) => { if (DEBUG) console.log('[MeetTranscript]', ...args); 
 // Minimum suffix/prefix overlap (chars) to treat a new caption window as a
 // continuation of the current utterance rather than a brand-new one.
 const MIN_OVERLAP_CHARS = 12;
-// After this much silence, always start a new line even if text looks similar
+// Without a changed caption window for this long, start a new line even if
+// wording looks similar. DOM observations are a heuristic, not audio silence.
 const UTTERANCE_EXPIRY_MS = 12000;
 
 const ELEMENT_NODE = 1; // Node.ELEMENT_NODE — spelled out so Node.js needs no DOM stub
@@ -250,6 +251,66 @@ function overlapLength(a, b) {
   return 0;
 }
 
+/**
+ * Compare whole words while keeping offsets into the ORIGINAL string. NFC and
+ * lowercasing may change string length, so normalized offsets must never be
+ * used to slice a caption. Internal punctuation, accents and signs are kept
+ * (e.g. 1.2, -12, sí and l'amour remain distinct).
+ */
+function comparisonTokensWithSpans(text) {
+  return [...text.matchAll(/\S+/gu)].map(match => ({
+    value: match[0].normalize('NFC').toLowerCase()
+      // Leading dots/commas may be decimal separators (.5 / ,5).
+      .replace(/^[!?;:…¿¡"'“”‘’()[\]{}]+|[.,!?;:…¿¡"'“”‘’()[\]{}]+$/gu, ''),
+    start: match.index,
+    end: match.index + match[0].length,
+  })).filter(token => token.value.length > 0);
+}
+
+/** Comparison only — the returned string is never exported as caption text. */
+function normalizeForComparison(text) {
+  return comparisonTokensWithSpans(text).map(token => token.value).join(' ');
+}
+
+/** Largest WHOLE-WORD rolling overlap, with the existing 400-character cap. */
+function normalizedOverlapLength(previous, next) {
+  // A wholly contained suffix may also be a legitimate repeated phrase.
+  // Require new words before reconstructing a rolling continuation.
+  const max = Math.min(previous.length, next.length - 1, 400);
+  for (let count = max; count >= 2; count--) {
+    const suffix = previous.slice(-count);
+    const length = suffix.map(token => token.value).join(' ').length;
+    if (length > 400 || length < MIN_OVERLAP_CHARS) continue;
+    if (suffix.every((token, index) => token.value === next[index].value)) return count;
+  }
+  return 0;
+}
+
+/**
+ * Conservative relationship between two windows of an ACTIVE speaker turn.
+ * The caller owns time/DOM boundaries. Never suppress arbitrary containment:
+ * a short reply contained in previous speech is still legitimate speech.
+ */
+function compareCaptionWindows(previousText, windowText) {
+  const previous = comparisonTokensWithSpans(previousText);
+  const next = comparisonTokensWithSpans(windowText);
+  const fresh = { text: windowText, sameUtterance: false };
+  if (!previous.length || !next.length) return fresh;
+
+  if (previous.length <= next.length &&
+      previous.every((token, index) => token.value === next[index].value)) {
+    // Extension or punctuation/case-only revision: retain Meet's latest text.
+    return { text: windowText, sameUtterance: true };
+  }
+
+  const overlap = normalizedOverlapLength(previous, next);
+  if (!overlap) return fresh;
+  // Keep the unseen beginning, then use the latest ORIGINAL window for the
+  // entire visible tail, including its revised spelling and punctuation.
+  const start = previous[previous.length - overlap].start;
+  return { text: previousText.slice(0, start) + windowText, sameUtterance: true };
+}
+
 // Requirable from Node for tests; `module` is undefined in the browser, so the
 // content script simply skips this.
 if (typeof module !== 'undefined' && module.exports) {
@@ -259,5 +320,6 @@ if (typeof module !== 'undefined' && module.exports) {
     CAPTION_LABEL_WORDS, CAPTION_LABELLED_SELECTOR, CAPTION_REGION_SELECTOR,
     looksLikeCaptionRegion, extractByJsname, extractByPosition, extractTextOnly,
     MEET_ANNOUNCEMENT_RE, isMeetAnnouncement, isSentenceFragment, overlapLength,
+    normalizeForComparison, compareCaptionWindows,
   };
 }

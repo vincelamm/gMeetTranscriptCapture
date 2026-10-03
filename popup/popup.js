@@ -53,10 +53,10 @@ function showView(name) {
   }
 }
 
-/** German line-count label with correct singular/plural. */
+/** Spanish line-count label with correct singular/plural. */
 function lineCountText(count) {
   const n = count || 0;
-  return n === 1 ? '1 Zeile erfasst' : `${n} Zeilen erfasst`;
+  return n === 1 ? '1 intervención capturada' : `${n} intervenciones capturadas`;
 }
 
 function renderIdle(state) {
@@ -97,11 +97,11 @@ function renderWaiting(state) {
   stopElapsedTimer();
   if (waitingMessage) {
     if (state.ccAction === 'clicked') {
-      waitingMessage.textContent = 'Untertitel aktiviert! Warte auf Text…';
+      waitingMessage.textContent = '¡Subtítulos activados! Esperando texto…';
     } else if (state.ccAction === 'already_on') {
-      waitingMessage.textContent = 'Untertitel sind aktiv. Die Aufnahme startet, sobald jemand spricht.';
+      waitingMessage.textContent = 'Los subtítulos están activos. La transcripción comenzará cuando alguien hable.';
     } else {
-      waitingMessage.textContent = 'Warte auf Untertitel…';
+      waitingMessage.textContent = 'Esperando subtítulos…';
     }
   }
   if (ccWarning) ccWarning.classList.toggle('hidden', !state.ccWarning);
@@ -168,7 +168,7 @@ function connectPort() {
     }
     if (msg.type === 'CC_STATUS' && msg.status === 'not_found') {
       // Captions still not detected after several attempts — show manual instructions
-      if (waitingMessage) waitingMessage.textContent = 'Untertitel noch nicht erkannt.';
+      if (waitingMessage) waitingMessage.textContent = 'Todavía no se han detectado subtítulos.';
       if (ccWarning) ccWarning.classList.remove('hidden');
     }
     if (msg.type === 'CC_STATUS' && msg.status === 'lost') {
@@ -236,10 +236,10 @@ btnStart.addEventListener('click', async () => {
   } else if (response?.status === 'ok') {
     const state = await sendMessage({ type: 'GET_STATE' });
     renderCapturing(state);
-  } else if (response?.error?.includes('Could not reach')) {
+  } else if (response?.errorCode === 'MEET_TAB_UNREACHABLE') {
     showView('reload');
   } else {
-    alert(response?.error || 'Aufnahme konnte nicht gestartet werden.');
+    alert(response?.error || 'No se pudo iniciar la transcripción.');
   }
 });
 
@@ -266,14 +266,14 @@ async function copyAIPrompt(btn) {
   if (response?.error) { alert(response.error); return; }
   try {
     await navigator.clipboard.writeText(response.content);
-    btn.textContent = 'Kopiert!';
+    btn.textContent = '¡Copiado!';
     btn.classList.add('copied');
     setTimeout(() => {
-      btn.textContent = 'KI-Prompt kopieren';
+      btn.textContent = 'Copiar prompt para IA';
       btn.classList.remove('copied');
     }, 2000);
   } catch {
-    alert('Konnte nicht in die Zwischenablage kopieren.');
+    alert('No se pudo copiar al portapapeles.');
   }
 }
 
@@ -346,7 +346,7 @@ async function checkForUpdate() {
     link.href = `https://github.com/${REPO}/releases/latest`;
     link.target = '_blank';
     link.rel = 'noopener';
-    link.textContent = `${latestTag} verfügbar`;
+    link.textContent = `${latestTag} disponible`;
     document.getElementById('footer-update').replaceChildren(link);
   }
 }

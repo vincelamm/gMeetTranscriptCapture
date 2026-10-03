@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="es">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -12,15 +12,15 @@
     <!-- Not on a Meet tab -->
     <div id="view-no-meet" class="view hidden">
       <div class="icon">📋</div>
-      <p class="message">Öffne einen Google-Meet-Tab, um die Erweiterung zu nutzen.</p>
+      <p class="message">Abre una pestaña de Google Meet para usar la extensión.</p>
     </div>
 
     <!-- Content script not reachable (tab needs reload) -->
     <div id="view-reload" class="view hidden">
       <div class="icon">🔄</div>
-      <h2>Tab-Neuladen erforderlich</h2>
-      <p class="message">Die Erweiterung wurde aktualisiert, nachdem dieser Tab geöffnet wurde. Bitte lade den Meet-Tab neu, um fortzufahren.</p>
-      <button id="btn-reload-tab" class="btn btn-primary">Meet-Tab neu laden</button>
+      <h2>Es necesario recargar la pestaña</h2>
+      <p class="message">La extensión se actualizó después de abrir esta pestaña. Recarga la pestaña de Meet para continuar.</p>
+      <button id="btn-reload-tab" class="btn btn-primary">Recargar pestaña de Meet</button>
     </div>
 
     <!-- On a Meet tab, idle -->
@@ -28,59 +28,59 @@
       <div class="icon">📋</div>
       <h2>Meet Transcript Capture</h2>
       <p class="hint">
-        Untertitel (CC) werden beim Start automatisch aktiviert.
+        Los subtítulos (CC) se activarán automáticamente al iniciar.
       </p>
       <p class="consent-notice">
-        Mit dem Start bestätigst du, dass alle Teilnehmenden über die Transkription informiert wurden.
+        Al iniciar confirmas que los participantes han sido informados de la transcripción.
       </p>
-      <button id="btn-start" class="btn btn-primary">Aufnahme starten</button>
+      <button id="btn-start" class="btn btn-primary">Iniciar transcripción</button>
       <div id="prev-transcript" class="hidden">
         <hr />
         <p class="line-count" id="idle-line-count"></p>
         <div class="row">
-          <button id="btn-download-txt" class="btn btn-secondary">.txt herunterladen</button>
-          <button id="btn-download-md" class="btn btn-secondary">.md herunterladen</button>
+          <button id="btn-download-txt" class="btn btn-secondary">Descargar .txt</button>
+          <button id="btn-download-md" class="btn btn-secondary">Descargar .md</button>
         </div>
-        <button id="btn-copy-prompt" class="btn btn-ai">KI-Prompt kopieren</button>
-        <button id="btn-clear" class="btn btn-ghost">Verwerfen</button>
+        <button id="btn-copy-prompt" class="btn btn-ai">Copiar prompt para IA</button>
+        <button id="btn-clear" class="btn btn-ghost">Descartar</button>
       </div>
     </div>
 
     <!-- Capturing -->
     <div id="view-capturing" class="view hidden">
       <div class="status-dot"></div>
-      <h2>Aufnahme läuft…</h2>
-      <p class="line-count" id="capturing-line-count">0 Zeilen erfasst</p>
+      <h2>Transcripción en curso…</h2>
+      <p class="line-count" id="capturing-line-count">0 intervenciones capturadas</p>
       <p class="elapsed" id="elapsed">00:00:00</p>
       <div id="no-lines-hint" class="cc-warning hidden">
-        <p>Es kommen keine Untertitel an. Bitte prüfe, ob die Untertitel (CC) in Meet noch aktiv sind.</p>
+        <p>No se están recibiendo subtítulos. Comprueba que los subtítulos (CC) sigan activos en Meet.</p>
       </div>
-      <button id="btn-stop" class="btn btn-danger">Aufnahme stoppen</button>
+      <button id="btn-stop" class="btn btn-danger">Detener transcripción</button>
       <hr />
-      <p class="hint">Transkript exportieren</p>
+      <p class="hint">Exportar transcripción</p>
       <div class="row">
-        <button id="btn-download-live-txt" class="btn btn-secondary">.txt herunterladen</button>
-        <button id="btn-download-live-md" class="btn btn-secondary">.md herunterladen</button>
+        <button id="btn-download-live-txt" class="btn btn-secondary">Descargar .txt</button>
+        <button id="btn-download-live-md" class="btn btn-secondary">Descargar .md</button>
       </div>
-      <button id="btn-copy-prompt-live" class="btn btn-ai">KI-Prompt kopieren</button>
+      <button id="btn-copy-prompt-live" class="btn btn-ai">Copiar prompt para IA</button>
     </div>
 
     <!-- Waiting for captions to be enabled -->
     <div id="view-waiting" class="view hidden">
       <div class="icon">⏳</div>
-      <h2>Warte auf Untertitel…</h2>
+      <h2>Esperando subtítulos…</h2>
       <p class="message" id="waiting-message">
-        Versuche, Untertitel automatisch zu aktivieren…
+        Intentando activar los subtítulos automáticamente…
       </p>
       <div id="cc-warning" class="cc-warning hidden">
-        <p>Untertitel konnten nicht erkannt werden. Bitte aktiviere sie manuell:</p>
+        <p>No se detectaron subtítulos. Actívalos manualmente:</p>
         <ol>
-          <li>Klicke auf den <strong>CC</strong>-Button in der unteren Meet-Leiste</li>
-          <li>Oder drücke die Taste <kbd>c</kbd></li>
+          <li>Pulsa el botón <strong>CC</strong> en la barra inferior de Meet</li>
+          <li>O presiona la tecla <kbd>c</kbd></li>
         </ol>
-        <p>Die Aufnahme startet automatisch, sobald Untertitel erscheinen.</p>
+        <p>La transcripción comenzará automáticamente cuando aparezcan subtítulos.</p>
       </div>
-      <button id="btn-cancel-wait" class="btn btn-ghost">Abbrechen</button>
+      <button id="btn-cancel-wait" class="btn btn-ghost">Cancelar</button>
     </div>
 
   </div>
